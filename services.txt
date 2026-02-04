@@ -1,0 +1,83 @@
+# Monad Validator API - Systemd Service Files
+# Bu dosyalar /etc/systemd/system/ altına kopyalanmalı
+
+# ========================================
+# 1. API Server (monad-api.service)
+# ========================================
+# /etc/systemd/system/monad-api.service
+
+[Unit]
+Description=Monad Validator API Server
+After=network.target
+
+[Service]
+Type=simple
+User=monad
+WorkingDirectory=/opt/monad-api
+ExecStart=/usr/bin/node src/index.js
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+EnvironmentFile=/opt/monad-api/.env
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=monad-api
+
+[Install]
+WantedBy=multi-user.target
+
+
+# ========================================
+# 2. Uptime Logger (monad-uptime-logger.service)
+# ========================================
+# /etc/systemd/system/monad-uptime-logger.service
+
+[Unit]
+Description=Monad Uptime Logger (journalctl → SQLite)
+After=network.target monad-ledger-tail.service
+Requires=monad-ledger-tail.service
+
+[Service]
+Type=simple
+User=monad
+WorkingDirectory=/opt/monad-api
+ExecStart=/usr/bin/node src/logger.js
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+EnvironmentFile=/opt/monad-api/.env
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=monad-uptime-logger
+
+[Install]
+WantedBy=multi-user.target
+
+
+# ========================================
+# Kurulum Komutları
+# ========================================
+# 
+# 1. Dosyaları kopyala:
+#    sudo cp monad-api.service /etc/systemd/system/
+#    sudo cp monad-uptime-logger.service /etc/systemd/system/
+#
+# 2. Systemd'yi reload et:
+#    sudo systemctl daemon-reload
+#
+# 3. Servisleri etkinleştir:
+#    sudo systemctl enable monad-api monad-uptime-logger
+#
+# 4. Servisleri başlat:
+#    sudo systemctl start monad-api monad-uptime-logger
+#
+# 5. Durumu kontrol et:
+#    sudo systemctl status monad-api monad-uptime-logger
+#
+# Logları izle:
+#    journalctl -u monad-api -f
+#    journalctl -u monad-uptime-logger -f
