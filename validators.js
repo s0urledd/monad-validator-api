@@ -36,8 +36,7 @@ function formatValidator(v) {
     ...(extra.discord && { discord: extra.discord }),
     ...(extra.telegram && { telegram: extra.telegram }),
     status: v.status || "unknown",
-    status_updated_at: toISO(v.status_updated_at),
-    updated_at: toISO(v.updated_at)
+    updated_at: toISO(Math.max(v.updated_at || 0, v.status_updated_at || 0) || null)
   };
 }
 
