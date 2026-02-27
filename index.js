@@ -30,9 +30,6 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Global rate limit: 60 req/min per IP
-app.use(rateLimit({ windowMs: 60_000, max: 60 }));
-
 // Request logging
 app.use((req, res, next) => {
   const start = Date.now();
@@ -90,8 +87,8 @@ app.get("/monad-api", (req, res) => {
 app.use("/monad-api/validators", validatorRoutes);
 app.use("/monad-api/validator", validatorRoutes);
 
-// Staking & Delegation routes (stricter limit + 30s timeout for heavy RPC calls)
-app.use("/monad-api/staking", rateLimit({ windowMs: 60_000, max: 20, timeoutMs: 30_000 }), stakingRoutes);
+// Staking & Delegation routes (rate limited + 60s timeout for heavy RPC calls)
+app.use("/monad-api/staking", rateLimit({ windowMs: 60_000, max: 60, timeoutMs: 60_000 }), stakingRoutes);
 
 // 404 handler
 app.use((req, res) => {
