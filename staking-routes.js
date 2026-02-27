@@ -19,7 +19,8 @@ const router = Router();
 // ---------- Helpers ----------
 function formatMON(wei) {
   const raw = ethers.formatEther(BigInt(wei));
-  return parseFloat(parseFloat(raw).toFixed(4));
+  const num = parseFloat(parseFloat(raw).toFixed(4));
+  return num.toLocaleString("en-US", { maximumFractionDigits: 4 });
 }
 
 // ---------- Epoch ----------
@@ -128,10 +129,10 @@ router.get("/validator/:valId/delegators", async (req, res) => {
       delegators.push(...results);
     }
 
-    // Sort by stake descending
+    // Sort by stake descending (strip commas for numeric comparison)
     delegators.sort((a, b) => {
-      const sa = parseFloat(a.stake) || 0;
-      const sb = parseFloat(b.stake) || 0;
+      const sa = parseFloat(String(a.stake).replace(/,/g, "")) || 0;
+      const sb = parseFloat(String(b.stake).replace(/,/g, "")) || 0;
       return sb - sa;
     });
 
