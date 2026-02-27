@@ -236,6 +236,8 @@ export function getLivePool() {
     return {
       bonded_tokens: toMON(bondedTokens),
       total_staked: toMON(totalStaked),
+      execution_validators: execIds.length,
+      consensus_validators: consensusIds.length,
     };
   });
 }
