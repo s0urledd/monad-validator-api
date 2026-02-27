@@ -45,7 +45,7 @@ function formatValidator(v) {
     ...(extra.telegram && { telegram: extra.telegram }),
     status: v.status || "unknown",
     stake: v.stake_wei ? formatMON(v.stake_wei) : null,
-    commission: v.commission_raw ? Number(v.commission_raw) / 100 : null,
+    commission: v.commission_raw ? parseFloat((Number(v.commission_raw) / 1e18 * 100).toFixed(2)) : null,
     unclaimed_rewards: v.unclaimed_rewards_wei ? formatMON(v.unclaimed_rewards_wei) : null,
     updated_at: toISO(Math.max(v.updated_at || 0, v.status_updated_at || 0) || null)
   };

@@ -51,12 +51,12 @@ export async function getValidatorOnChain(valId) {
   const info = await contract.getValidator.staticCall(valId);
   return {
     stake: formatMON(info.stake),
-    commission: Number(info.commission) / 100,
+    commission: parseFloat((Number(info.commission) / 1e18 * 100).toFixed(2)),
     unclaimed_rewards: formatMON(info.unclaimed_rewards),
     consensus_stake: formatMON(info.consensus_stake),
-    consensus_commission: Number(info.consensus_commission) / 100,
+    consensus_commission: parseFloat((Number(info.consensus_commission) / 1e18 * 100).toFixed(2)),
     snapshot_stake: formatMON(info.snapshot_stake),
-    snapshot_commission: Number(info.snapshot_commission) / 100,
+    snapshot_commission: parseFloat((Number(info.snapshot_commission) / 1e18 * 100).toFixed(2)),
     auth_address: info.auth_address,
     // raw values for DB caching (not exposed in API)
     _raw: {
