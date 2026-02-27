@@ -6,6 +6,7 @@ import express from "express";
 import cors from "cors";
 import validatorRoutes from "./validators.js";
 import { startPeriodicSync } from "./github-sync.js";
+import { startStatusSync } from "./status-sync.js";
 import { getValidatorCount } from "./db.js";
 
 const PORT = Number(process.env.PORT || 3000);
@@ -100,7 +101,8 @@ app.listen(PORT, HOST, () => {
   log("info", `🔒 Hidden endpoint: /monad-api/validators (list all)`);
   
   startPeriodicSync();
-  
+  startStatusSync();
+
   log("info", `✅ Server ready!`);
 });
 
