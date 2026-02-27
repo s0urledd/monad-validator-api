@@ -224,8 +224,8 @@ export function getStakingPool() {
 
   let totalStaked = 0n;
   let bondedTokens = 0n;
-  let pendingActivation = 0n;
-  let pendingDeactivation = 0n;
+  let pendingStake = 0n;
+  let pendingUnstake = 0n;
   let activeCount = 0;
 
   for (const r of rows) {
@@ -239,17 +239,17 @@ export function getStakingPool() {
     // stake > consensus_stake = new delegations pending activation next epoch
     // consensus_stake > stake = undelegations pending deactivation next epoch
     if (stake > consensus) {
-      pendingActivation += stake - consensus;
+      pendingStake += stake - consensus;
     } else if (consensus > stake) {
-      pendingDeactivation += consensus - stake;
+      pendingUnstake += consensus - stake;
     }
   }
 
   return {
     bonded_tokens: bondedTokens.toString(),
     total_staked: totalStaked.toString(),
-    pending_activation: pendingActivation.toString(),
-    pending_deactivation: pendingDeactivation.toString(),
+    pending_stake: pendingStake.toString(),
+    pending_unstake: pendingUnstake.toString(),
     total_validators: rows.length,
     active_validators: activeCount,
   };
