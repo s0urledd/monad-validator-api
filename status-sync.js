@@ -86,32 +86,63 @@ async function syncStatuses() {
     return { updated: 0, error: err.message };
   }
 
-  // DB'de olmayan on-chain validator'leri kaydet
-  const allOnChainIds = new Set([...consensusSet, ...executionSet, ...snapshotSet]);
+  // Discover ALL on-chain validators (including inactive below threshold)
+  const allSetIds = new Set([...consensusSet, ...executionSet, ...snapshotSet]);
+  const maxSetId = Math.max(...allSetIds, 0);
   const existingIds = new Set(getAllValidators().map((v) => v.id));
-  const missingIds = [...allOnChainIds].filter((id) => !existingIds.has(id));
+  const maxKnownId = Math.max(maxSetId, ...existingIds, 0);
+
+  // Scan from 1 to maxKnownId + buffer to find all validators
+  const scanLimit = maxKnownId + 20;
+  const missingIds = [];
+  for (let id = 1; id <= scanLimit; id++) {
+    if (!existingIds.has(id) && !allSetIds.has(id)) {
+      missingIds.push(id);
+    } else if (!existingIds.has(id) && allSetIds.has(id)) {
+      missingIds.push(id);
+    }
+  }
 
   if (missingIds.length > 0) {
-    log("info", `Found ${missingIds.length} on-chain validators not in DB, fetching details...`);
-    for (const valId of missingIds) {
-      try {
-        const info = await contract.getValidator.staticCall(valId);
-        const secpHex = normalizeAddress(info.secp_pubkey);
-        const blsHex = normalizeAddress(info.bls_pubkey);
+    log("info", `Scanning ${missingIds.length} potential validator IDs (1-${scanLimit})...`);
+    let discovered = 0;
+    const batchSize = 20;
+    for (let i = 0; i < missingIds.length; i += batchSize) {
+      const batch = missingIds.slice(i, i + batchSize);
+      const results = await Promise.all(
+        batch.map(async (valId) => {
+          try {
+            const info = await contract.getValidator.staticCall(valId);
+            // Valid validator has non-zero auth_address
+            if (info.auth_address && info.auth_address !== ethers.ZeroAddress) {
+              return { valId, info };
+            }
+            return null;
+          } catch {
+            return null;
+          }
+        })
+      );
+      for (const r of results) {
+        if (!r) continue;
+        const secpHex = normalizeAddress(r.info.secp_pubkey);
+        const blsHex = normalizeAddress(r.info.bls_pubkey);
         upsertValidator({
-          id: valId,
+          id: r.valId,
           secp_address: secpHex,
           bls_public_key: blsHex,
-          name: `Validator #${valId}`,
+          name: `Validator #${r.valId}`,
           website: null,
           description: null,
           logo_url: null,
-          raw_json: JSON.stringify({ id: valId, source: "on-chain" }),
+          raw_json: JSON.stringify({ id: r.valId, source: "on-chain" }),
         });
-        log("debug", `Registered on-chain validator #${valId}`);
-      } catch (err) {
-        log("warn", `Failed to fetch on-chain validator #${valId}:`, err.message);
+        discovered++;
+        log("debug", `Discovered validator #${r.valId}`);
       }
+    }
+    if (discovered > 0) {
+      log("info", `Discovered ${discovered} new validators from on-chain scan`);
     }
   }
 
