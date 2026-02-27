@@ -8,12 +8,14 @@
     "start": "node index.js",
     "logger": "node logger.js",
     "sync": "node github-sync.js",
+    "status-sync": "node status-sync.js",
     "dev": "node --watch index.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.7.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
+    "ethers": "^6.16.0",
     "express": "^4.21.2",
     "node-fetch": "^3.3.2"
   }

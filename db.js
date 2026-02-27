@@ -38,7 +38,7 @@ db.exec(`
     ON uptime_events(validator_id, timestamp DESC);
   CREATE INDEX IF NOT EXISTS idx_uptime_time 
     ON uptime_events(timestamp DESC);
-  CREATE INDEX IF NOT EXISTS idx_validators_secp 
+  CREATE INDEX IF NOT EXISTS idx_validators_secp
     ON validators(secp_address);
 `);
 
@@ -47,6 +47,18 @@ try {
   db.exec(`ALTER TABLE uptime_events ADD COLUMN seq_num INTEGER`);
 } catch (e) {
   // Column already exists
+}
+
+// status columns yoksa ekle
+for (const col of [
+  "status TEXT DEFAULT 'unknown'",
+  "status_updated_at INTEGER"
+]) {
+  try {
+    db.exec(`ALTER TABLE validators ADD COLUMN ${col}`);
+  } catch (e) {
+    // Column already exists
+  }
 }
 
 // ---------- Validator CRUD ----------
@@ -162,6 +174,25 @@ export function getValidatorIdByAddress(address) {
   const normalized = normalizeAddress(address);
   const row = db.prepare("SELECT id FROM validators WHERE secp_address = ?").get(normalized);
   return row ? row.id : null;
+}
+
+// ---------- Status Updates ----------
+const updateStatusStmt = db.prepare(`
+  UPDATE validators SET status = ?, status_updated_at = strftime('%s', 'now')
+  WHERE id = ?
+`);
+
+export function updateValidatorStatus(id, status) {
+  return updateStatusStmt.run(status, id);
+}
+
+export function updateAllValidatorStatuses(statusMap) {
+  const txn = db.transaction((map) => {
+    for (const [id, status] of Object.entries(map)) {
+      updateStatusStmt.run(status, parseInt(id));
+    }
+  });
+  return txn(statusMap);
 }
 
 export default db;

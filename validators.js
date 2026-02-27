@@ -11,6 +11,10 @@ import {
 const router = Router();
 
 // ---------- Helpers ----------
+function toISO(epoch) {
+  return epoch ? new Date(epoch * 1000).toISOString() : null;
+}
+
 function formatValidator(v) {
   if (!v) return null;
   
@@ -31,7 +35,9 @@ function formatValidator(v) {
     ...(extra.twitter && { twitter: extra.twitter }),
     ...(extra.discord && { discord: extra.discord }),
     ...(extra.telegram && { telegram: extra.telegram }),
-    updated_at: v.updated_at
+    status: v.status || "unknown",
+    status_updated_at: toISO(v.status_updated_at),
+    updated_at: toISO(v.updated_at)
   };
 }
 
@@ -40,6 +46,7 @@ function formatUptime(stats, validator, lastEvent = null) {
     validator_id: validator.id,
     validator_name: validator.name,
     secp_address: validator.secp_address,
+    status: validator.status || "unknown",
     window_hours: stats.window_hours,
     finalized_count: stats.finalized,
     timeout_count: stats.timeout,
