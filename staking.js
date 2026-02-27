@@ -243,8 +243,8 @@ export function getLivePool() {
     return {
       bonded_tokens: toMON(bondedTokens),
       total_staked: toMON(totalStaked),
-      pending_activation: toMON(pendingStake),
-      pending_deactivation: toMON(pendingUnstake),
+      pending_stake: toMON(pendingStake),
+      pending_unstake: toMON(pendingUnstake),
       total_validators: allIds.length,
       active_validators: activeCount,
     };
