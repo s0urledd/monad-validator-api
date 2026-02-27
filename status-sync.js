@@ -87,13 +87,11 @@ async function syncStatuses() {
 
   for (const v of validators) {
     if (consensusSet.has(v.id)) {
-      statusMap[v.id] = { status: "active", statusSet: "consensus" };
-    } else if (snapshotSet.has(v.id)) {
-      statusMap[v.id] = { status: "pending", statusSet: "snapshot" };
-    } else if (executionSet.has(v.id)) {
-      statusMap[v.id] = { status: "pending", statusSet: "execution" };
+      statusMap[v.id] = "active";
+    } else if (snapshotSet.has(v.id) || executionSet.has(v.id)) {
+      statusMap[v.id] = "pending";
     } else {
-      statusMap[v.id] = { status: "inactive", statusSet: null };
+      statusMap[v.id] = "inactive";
     }
   }
 
@@ -105,7 +103,7 @@ async function syncStatuses() {
   }
 
   const counts = { active: 0, pending: 0, inactive: 0 };
-  for (const { status } of Object.values(statusMap)) {
+  for (const status of Object.values(statusMap)) {
     counts[status]++;
   }
 

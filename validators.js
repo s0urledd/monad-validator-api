@@ -32,7 +32,6 @@ function formatValidator(v) {
     ...(extra.discord && { discord: extra.discord }),
     ...(extra.telegram && { telegram: extra.telegram }),
     status: v.status || "unknown",
-    status_set: v.status_set || null,
     status_updated_at: v.status_updated_at || null,
     updated_at: v.updated_at
   };
@@ -44,7 +43,6 @@ function formatUptime(stats, validator, lastEvent = null) {
     validator_name: validator.name,
     secp_address: validator.secp_address,
     status: validator.status || "unknown",
-    status_set: validator.status_set || null,
     window_hours: stats.window_hours,
     finalized_count: stats.finalized,
     timeout_count: stats.timeout,

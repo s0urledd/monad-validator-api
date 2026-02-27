@@ -52,7 +52,6 @@ try {
 // status columns yoksa ekle
 for (const col of [
   "status TEXT DEFAULT 'unknown'",
-  "status_set TEXT",
   "status_updated_at INTEGER"
 ]) {
   try {
@@ -179,18 +178,18 @@ export function getValidatorIdByAddress(address) {
 
 // ---------- Status Updates ----------
 const updateStatusStmt = db.prepare(`
-  UPDATE validators SET status = ?, status_set = ?, status_updated_at = strftime('%s', 'now')
+  UPDATE validators SET status = ?, status_updated_at = strftime('%s', 'now')
   WHERE id = ?
 `);
 
-export function updateValidatorStatus(id, status, statusSet) {
-  return updateStatusStmt.run(status, statusSet, id);
+export function updateValidatorStatus(id, status) {
+  return updateStatusStmt.run(status, id);
 }
 
 export function updateAllValidatorStatuses(statusMap) {
   const txn = db.transaction((map) => {
-    for (const [id, { status, statusSet }] of Object.entries(map)) {
-      updateStatusStmt.run(status, statusSet, parseInt(id));
+    for (const [id, status] of Object.entries(map)) {
+      updateStatusStmt.run(status, parseInt(id));
     }
   });
   return txn(statusMap);
