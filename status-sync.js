@@ -147,6 +147,7 @@ async function syncStatuses() {
           commission_raw: info.commission.toString(),
           unclaimed_rewards_wei: info.unclaimed_rewards.toString(),
           consensus_stake_wei: info.consensus_stake.toString(),
+          snapshot_stake_wei: info.snapshot_stake.toString(),
         };
       } catch (err) {
         log("debug", `Failed to fetch staking data for validator #${v.id}: ${err.message}`);

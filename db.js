@@ -56,7 +56,8 @@ for (const col of [
   "stake_wei TEXT",
   "commission_raw TEXT",
   "unclaimed_rewards_wei TEXT",
-  "consensus_stake_wei TEXT"
+  "consensus_stake_wei TEXT",
+  "snapshot_stake_wei TEXT"
 ]) {
   try {
     db.exec(`ALTER TABLE validators ADD COLUMN ${col}`);
@@ -201,18 +202,18 @@ export function updateAllValidatorStatuses(statusMap) {
 
 // ---------- Staking Data Updates ----------
 const updateStakingStmt = db.prepare(`
-  UPDATE validators SET stake_wei = ?, commission_raw = ?, unclaimed_rewards_wei = ?, consensus_stake_wei = ?
+  UPDATE validators SET stake_wei = ?, commission_raw = ?, unclaimed_rewards_wei = ?, consensus_stake_wei = ?, snapshot_stake_wei = ?
   WHERE id = ?
 `);
 
-export function updateValidatorStakingData(id, stakeWei, commissionRaw, unclaimedRewardsWei, consensusStakeWei) {
-  return updateStakingStmt.run(stakeWei, commissionRaw, unclaimedRewardsWei, consensusStakeWei || null, id);
+export function updateValidatorStakingData(id, stakeWei, commissionRaw, unclaimedRewardsWei, consensusStakeWei, snapshotStakeWei) {
+  return updateStakingStmt.run(stakeWei, commissionRaw, unclaimedRewardsWei, consensusStakeWei || null, snapshotStakeWei || null, id);
 }
 
 export function updateAllValidatorStakingData(dataMap) {
   const txn = db.transaction((map) => {
     for (const [id, data] of Object.entries(map)) {
-      updateStakingStmt.run(data.stake_wei, data.commission_raw, data.unclaimed_rewards_wei, data.consensus_stake_wei || null, parseInt(id));
+      updateStakingStmt.run(data.stake_wei, data.commission_raw, data.unclaimed_rewards_wei, data.consensus_stake_wei || null, data.snapshot_stake_wei || null, parseInt(id));
     }
   });
   return txn(dataMap);
