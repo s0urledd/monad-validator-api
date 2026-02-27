@@ -11,6 +11,10 @@ import {
 const router = Router();
 
 // ---------- Helpers ----------
+function toISO(epoch) {
+  return epoch ? new Date(epoch * 1000).toISOString() : null;
+}
+
 function formatValidator(v) {
   if (!v) return null;
   
@@ -32,8 +36,8 @@ function formatValidator(v) {
     ...(extra.discord && { discord: extra.discord }),
     ...(extra.telegram && { telegram: extra.telegram }),
     status: v.status || "unknown",
-    status_updated_at: v.status_updated_at || null,
-    updated_at: v.updated_at
+    status_updated_at: toISO(v.status_updated_at),
+    updated_at: toISO(v.updated_at)
   };
 }
 
