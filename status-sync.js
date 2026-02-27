@@ -3,7 +3,7 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import { ethers } from "ethers";
-import { getAllValidators, updateAllValidatorStatuses } from "./db.js";
+import { getAllValidators, updateAllValidatorStatuses, upsertValidator, normalizeAddress } from "./db.js";
 
 const MONAD_RPC_URL = process.env.MONAD_RPC_URL || "http://127.0.0.1:8080";
 const SYNC_INTERVAL_MS = Number(process.env.STATUS_SYNC_INTERVAL_MS || 3600000);
@@ -15,6 +15,7 @@ const STAKING_ABI = [
   "function getConsensusValidatorSet(uint32 startIndex) external returns (bool isDone, uint32 nextIndex, uint64[] valIds)",
   "function getExecutionValidatorSet(uint32 startIndex) external returns (bool isDone, uint32 nextIndex, uint64[] valIds)",
   "function getSnapshotValidatorSet(uint32 startIndex) external returns (bool isDone, uint32 nextIndex, uint64[] valIds)",
+  "function getValidator(uint64 valId) external returns (tuple(uint256 stake, uint256 acc, uint256 commission, bytes secp_pubkey, bytes bls_pubkey, uint256 address_flags, uint256 unclaimed_rewards, address auth_address))",
 ];
 
 // ---------- Logging ----------
@@ -80,6 +81,35 @@ async function syncStatuses() {
   } catch (err) {
     log("error", "Failed to fetch validator sets:", err.message);
     return { updated: 0, error: err.message };
+  }
+
+  // DB'de olmayan on-chain validator'leri kaydet
+  const allOnChainIds = new Set([...consensusSet, ...executionSet, ...snapshotSet]);
+  const existingIds = new Set(getAllValidators().map((v) => v.id));
+  const missingIds = [...allOnChainIds].filter((id) => !existingIds.has(id));
+
+  if (missingIds.length > 0) {
+    log("info", `Found ${missingIds.length} on-chain validators not in DB, fetching details...`);
+    for (const valId of missingIds) {
+      try {
+        const info = await contract.getValidator.staticCall(valId);
+        const secpHex = normalizeAddress(info.secp_pubkey);
+        const blsHex = normalizeAddress(info.bls_pubkey);
+        upsertValidator({
+          id: valId,
+          secp_address: secpHex,
+          bls_public_key: blsHex,
+          name: `Validator #${valId}`,
+          website: null,
+          description: null,
+          logo_url: null,
+          raw_json: JSON.stringify({ id: valId, source: "on-chain" }),
+        });
+        log("debug", `Registered on-chain validator #${valId}`);
+      } catch (err) {
+        log("warn", `Failed to fetch on-chain validator #${valId}:`, err.message);
+      }
+    }
   }
 
   const validators = getAllValidators();
