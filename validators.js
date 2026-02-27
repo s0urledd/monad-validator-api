@@ -18,9 +18,7 @@ function toISO(epoch) {
 
 function formatMON(wei) {
   const raw = ethers.formatEther(BigInt(wei));
-  const [int, dec] = raw.split(".");
-  if (!dec) return int + ".0";
-  return int + "." + dec.slice(0, 4);
+  return parseFloat(parseFloat(raw).toFixed(4));
 }
 
 function formatValidator(v) {
