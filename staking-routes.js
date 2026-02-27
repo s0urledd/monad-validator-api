@@ -12,6 +12,7 @@ import {
 import {
   getValidatorById,
   getAllValidators,
+  getValidatorCountsByStatus,
 } from "./db.js";
 
 const router = Router();
@@ -53,9 +54,16 @@ router.get("/pool", async (req, res) => {
       getEpochInfo().catch(() => null),
     ]);
 
+    const statusCounts = getValidatorCountsByStatus();
+    const totalValidators = Object.values(statusCounts).reduce((a, b) => a + b, 0);
+
     res.json({
       success: true,
       ...pool,
+      total_validators: totalValidators,
+      active_validators: statusCounts.active || 0,
+      pending_validators: statusCounts.pending || 0,
+      inactive_validators: statusCounts.inactive || 0,
       ...(epoch && { epoch: epoch.epoch, in_delay_period: epoch.in_delay_period }),
     });
   } catch (err) {
