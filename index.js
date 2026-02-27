@@ -1,6 +1,7 @@
 // src/index.js - Main API Server
 import dotenv from "dotenv";
 dotenv.config();
+
 import express from "express";
 import cors from "cors";
 import validatorRoutes from "./validators.js";
@@ -23,8 +24,6 @@ function log(level, ...args) {
 
 // ---------- Express Setup ----------
 const app = express();
-
-// Middleware
 app.use(cors());
 app.use(express.json());
 
@@ -49,28 +48,32 @@ app.get("/health", (req, res) => {
   });
 });
 
-// API info
+// API info - /validators endpoint'i gösterme
 app.get("/monad-api", (req, res) => {
   res.json({
     name: "Monad Validator API",
     version: "1.0.0",
     endpoints: {
-      "GET /monad-api/validators": "List all validators",
-      "GET /monad-api/validators/:id": "Get validator by ID (1, 2, 3...)",
-      "GET /monad-api/validators/:address": "Get validator by Secp address (0x...)",
-      "GET /monad-api/validators/uptime/:id": "Single validator uptime"
+      "GET /monad-api/validator/:id": "Get validator by ID (1, 2, 3...)",
+      "GET /monad-api/validator/:address": "Get validator by Secp address",
+      "GET /monad-api/validator/uptime/:id": "Single validator uptime",
+      "GET /monad-api/validator/uptime/:id/history": "Validator round history"
     },
     query_params: {
       uptime: {
-        window: "Hours window (1-168, default 24)",
-        limit: "Recent events limit (1-1000, default 100)"
+        window: "Hours window (1-24, default 24)",
+        sort: "Sort by: 'uptime' (desc) or 'id' (asc)"
+      },
+      history: {
+        limit: "Number of rounds (1-50, default 49)"
       }
     }
   });
 });
 
-// Validator routes
+// Routes - /validators gizli endpoint (sadece sen kullan)
 app.use("/monad-api/validators", validatorRoutes);
+app.use("/monad-api/validator", validatorRoutes);
 
 // 404 handler
 app.use((req, res) => {
@@ -93,14 +96,14 @@ app.use((err, req, res, next) => {
 // ---------- Startup ----------
 app.listen(PORT, HOST, () => {
   log("info", `🚀 Monad Validator API running on http://${HOST}:${PORT}`);
-  log("info", `📋 Endpoints: /monad-api/validators, /monad-api/validators/uptime/:id`);
+  log("info", `📋 Public endpoints: /monad-api/validator/...`);
+  log("info", `🔒 Hidden endpoint: /monad-api/validators (list all)`);
   
-  // Start GitHub metadata sync
   startPeriodicSync();
+  
   log("info", `✅ Server ready!`);
 });
 
-// Graceful shutdown
 process.on("SIGINT", () => {
   log("info", "Shutting down...");
   process.exit(0);
