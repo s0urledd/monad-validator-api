@@ -22,6 +22,9 @@ const STAKING_ABI = [
   "function getEpoch() external returns (uint64 epoch, bool inEpochDelayPeriod)",
   // Current block proposer
   "function getProposerValId() external returns (uint64)",
+  // Validator sets (paginated)
+  "function getExecutionValidatorSet(uint32 startIndex) external returns (bool isDone, uint32 nextIndex, uint64[] valIds)",
+  "function getConsensusValidatorSet(uint32 startIndex) external returns (bool isDone, uint32 nextIndex, uint64[] valIds)",
 ];
 
 // ---------- Helpers ----------
@@ -146,6 +149,106 @@ export async function getProposer() {
   const contract = getContract();
   const valId = await contract.getProposerValId.staticCall();
   return Number(valId);
+}
+
+// ---------- Validator Set Queries ----------
+
+function getExecutionValidatorSet() {
+  return cached("exec-val-set", async () => {
+    const contract = getContract();
+    const ids = [];
+    let startIndex = 0;
+    let isDone = false;
+
+    while (!isDone) {
+      const result = await contract.getExecutionValidatorSet.staticCall(startIndex);
+      isDone = result[0];
+      startIndex = Number(result[1]);
+      ids.push(...result[2].map((id) => Number(id)));
+    }
+    return ids;
+  });
+}
+
+function getConsensusValidatorSet() {
+  return cached("consensus-val-set", async () => {
+    const contract = getContract();
+    const ids = [];
+    let startIndex = 0;
+    let isDone = false;
+
+    while (!isDone) {
+      const result = await contract.getConsensusValidatorSet.staticCall(startIndex);
+      isDone = result[0];
+      startIndex = Number(result[1]);
+      ids.push(...result[2].map((id) => Number(id)));
+    }
+    return ids;
+  });
+}
+
+// ---------- Live Pool ----------
+
+const POOL_CACHE_TTL_MS = 60_000;
+
+export function getLivePool() {
+  return cached("live-pool", async () => {
+    const contract = getContract();
+
+    // Get both validator sets
+    const [execIds, consensusIds] = await Promise.all([
+      getExecutionValidatorSet(),
+      getConsensusValidatorSet(),
+    ]);
+
+    const consensusSet = new Set(consensusIds);
+    const allIds = [...new Set([...execIds, ...consensusIds])];
+
+    // Batch query all validators
+    let totalStaked = 0n;
+    let bondedTokens = 0n;
+    let pendingStake = 0n;
+    let pendingUnstake = 0n;
+    let activeCount = 0;
+    const batchSize = 20;
+
+    for (let i = 0; i < allIds.length; i += batchSize) {
+      const batch = allIds.slice(i, i + batchSize);
+      const results = await Promise.all(
+        batch.map(async (valId) => {
+          try {
+            const info = await contract.getValidator.staticCall(valId);
+            return { valId, stake: info.stake, consensus_stake: info.consensus_stake };
+          } catch {
+            return null;
+          }
+        })
+      );
+
+      for (const r of results) {
+        if (!r) continue;
+        totalStaked += r.stake;
+        if (consensusSet.has(r.valId)) {
+          bondedTokens += r.consensus_stake;
+          activeCount++;
+        }
+        if (r.stake > r.consensus_stake) {
+          pendingStake += r.stake - r.consensus_stake;
+        } else if (r.consensus_stake > r.stake) {
+          pendingUnstake += r.consensus_stake - r.stake;
+        }
+      }
+    }
+
+    return {
+      bonded_tokens: toMON(bondedTokens),
+      total_staked: toMON(totalStaked),
+      pending_stake: toMON(pendingStake),
+      pending_unstake: toMON(pendingUnstake),
+      total_validators: allIds.length,
+      active_validators: activeCount,
+    };
+  });
 }
 
 // ---------- Batch Queries ----------
