@@ -7,11 +7,11 @@ import {
   getAllDelegations,
   getAllDelegators,
   getEpochInfo,
+  getLivePool,
 } from "./staking.js";
 import {
   getValidatorById,
   getAllValidators,
-  getStakingPool,
 } from "./db.js";
 
 const router = Router();
@@ -48,18 +48,13 @@ router.get("/epoch", async (req, res) => {
 router.get("/pool", async (req, res) => {
   try {
     const [pool, epoch] = await Promise.all([
-      Promise.resolve(getStakingPool()),
+      getLivePool(),
       getEpochInfo().catch(() => null),
     ]);
 
     res.json({
       success: true,
-      bonded_tokens: toMON(pool.bonded_tokens),
-      total_staked: toMON(pool.total_staked),
-      pending_stake: toMON(pool.pending_stake),
-      pending_unstake: toMON(pool.pending_unstake),
-      total_validators: pool.total_validators,
-      active_validators: pool.active_validators,
+      ...pool,
       ...(epoch && { epoch: epoch.epoch, in_delay_period: epoch.in_delay_period }),
     });
   } catch (err) {
