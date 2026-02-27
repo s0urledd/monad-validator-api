@@ -9,6 +9,7 @@ import stakingRoutes from "./staking-routes.js";
 import { startPeriodicSync } from "./github-sync.js";
 import { startStatusSync } from "./status-sync.js";
 import { getValidatorCount } from "./db.js";
+import { rateLimit } from "./rate-limit.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -86,8 +87,8 @@ app.get("/monad-api", (req, res) => {
 app.use("/monad-api/validators", validatorRoutes);
 app.use("/monad-api/validator", validatorRoutes);
 
-// Staking & Delegation routes
-app.use("/monad-api/staking", stakingRoutes);
+// Staking & Delegation routes (rate limited + 60s timeout for heavy RPC calls)
+app.use("/monad-api/staking", rateLimit({ windowMs: 60_000, max: 60, timeoutMs: 60_000 }), stakingRoutes);
 
 // 404 handler
 app.use((req, res) => {
