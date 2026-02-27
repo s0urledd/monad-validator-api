@@ -191,9 +191,8 @@ function getConsensusValidatorSet() {
 
 const POOL_CACHE_TTL_MS = 60_000;
 
-export function getLivePool(includeDetails = false) {
-  const cacheKey = includeDetails ? "live-pool-details" : "live-pool";
-  return cached(cacheKey, async () => {
+export function getLivePool() {
+  return cached("live-pool", async () => {
     const contract = getContract();
 
     // Get both validator sets
@@ -208,11 +207,7 @@ export function getLivePool(includeDetails = false) {
     // Batch query all validators
     let totalStaked = 0n;
     let bondedTokens = 0n;
-    let pendingStake = 0n;
-    let pendingUnstake = 0n;
     let activeCount = 0;
-    const pendingStakeDetails = [];
-    const pendingUnstakeDetails = [];
     const batchSize = 20;
 
     for (let i = 0; i < allIds.length; i += batchSize) {
@@ -235,49 +230,13 @@ export function getLivePool(includeDetails = false) {
           bondedTokens += r.consensus_stake;
           activeCount++;
         }
-        if (r.stake > r.consensus_stake) {
-          const diff = r.stake - r.consensus_stake;
-          pendingStake += diff;
-          if (includeDetails) {
-            pendingStakeDetails.push({
-              validator_id: r.valId,
-              execution_stake: toMON(r.stake),
-              consensus_stake: toMON(r.consensus_stake),
-              difference: toMON(diff),
-            });
-          }
-        } else if (r.consensus_stake > r.stake) {
-          const diff = r.consensus_stake - r.stake;
-          pendingUnstake += diff;
-          if (includeDetails) {
-            pendingUnstakeDetails.push({
-              validator_id: r.valId,
-              execution_stake: toMON(r.stake),
-              consensus_stake: toMON(r.consensus_stake),
-              difference: toMON(diff),
-            });
-          }
-        }
       }
     }
 
-    const result = {
+    return {
       bonded_tokens: toMON(bondedTokens),
       total_staked: toMON(totalStaked),
-      pending_stake: toMON(pendingStake),
-      pending_unstake: toMON(pendingUnstake),
-      total_validators: allIds.length,
-      active_validators: activeCount,
     };
-
-    if (includeDetails) {
-      pendingStakeDetails.sort((a, b) => b.difference - a.difference);
-      pendingUnstakeDetails.sort((a, b) => b.difference - a.difference);
-      result.pending_stake_validators = pendingStakeDetails;
-      result.pending_unstake_validators = pendingUnstakeDetails;
-    }
-
-    return result;
   });
 }
 
