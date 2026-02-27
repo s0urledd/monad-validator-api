@@ -106,8 +106,8 @@ GET /monad-api                                   # API info & endpoint list
   "success": true,
   "bonded_tokens": 12300712423.81,
   "total_staked": 12303076653.87,
-  "execution_validators": 187,
-  "consensus_validators": 170,
+  "total_validators": 229,
+  "active_validators": 200,
   "epoch": 1163,
   "in_delay_period": false
 }
@@ -189,7 +189,7 @@ sudo systemctl enable --now monad-api monad-uptime-logger
 - All monetary values are returned as **raw numbers** (not formatted strings) for safe client-side parsing
 - **30s in-memory cache** on live RPC calls prevents redundant queries under burst traffic
 - **Epoch watcher** polls every 2 minutes and triggers a full sync on epoch transitions or boundary blocks
-- Validator counts (`execution_validators`, `consensus_validators`) are sourced directly from on-chain validator sets
+- `total_validators` from DB (all known), `active_validators` from on-chain consensus set
 - SQLite WAL mode enables concurrent reads/writes
 - GitHub sync failures preserve existing data (no data loss)
 
