@@ -227,7 +227,8 @@ export function getLivePool() {
 
       for (const r of results) {
         if (!r) continue;
-        totalStaked += r.stake;
+        // total_staked = higher of execution vs consensus (true total including pending)
+        totalStaked += r.stake > r.consensus_stake ? r.stake : r.consensus_stake;
         if (consensusSet.has(r.valId)) {
           bondedTokens += r.consensus_stake;
           activeCount++;
