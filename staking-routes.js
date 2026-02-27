@@ -7,7 +7,6 @@ import {
   getAllDelegations,
   getAllDelegators,
   getEpochInfo,
-  getProposer,
 } from "./staking.js";
 import {
   getValidatorById,
@@ -27,23 +26,12 @@ function formatMON(wei) {
 // GET /monad-api/staking/epoch
 router.get("/epoch", async (req, res) => {
   try {
-    const [epoch, proposerValId] = await Promise.all([
-      getEpochInfo(),
-      getProposer().catch(() => null),
-    ]);
-
-    const proposer = proposerValId ? getValidatorById(proposerValId) : null;
+    const epoch = await getEpochInfo();
 
     res.json({
       success: true,
       epoch: epoch.epoch,
       in_delay_period: epoch.in_delay_period,
-      current_proposer: proposerValId
-        ? {
-            validator_id: proposerValId,
-            name: proposer?.name || `Validator #${proposerValId}`,
-          }
-        : null,
     });
   } catch (err) {
     res.status(503).json({
