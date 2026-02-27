@@ -15,7 +15,7 @@ const STAKING_ABI = [
   "function getConsensusValidatorSet(uint32 startIndex) external returns (bool isDone, uint32 nextIndex, uint64[] valIds)",
   "function getExecutionValidatorSet(uint32 startIndex) external returns (bool isDone, uint32 nextIndex, uint64[] valIds)",
   "function getSnapshotValidatorSet(uint32 startIndex) external returns (bool isDone, uint32 nextIndex, uint64[] valIds)",
-  "function getValidator(uint64 valId) external returns (tuple(uint256 stake, uint256 acc, uint256 commission, bytes secp_pubkey, bytes bls_pubkey, uint256 address_flags, uint256 unclaimed_rewards, address auth_address))",
+  "function getValidator(uint64 valId) external returns (tuple(address auth_address, uint256 flags, uint256 stake, uint256 acc_reward_per_token, uint256 commission, uint256 unclaimed_rewards, uint256 consensus_stake, uint256 consensus_commission, uint256 snapshot_stake, uint256 snapshot_commission, bytes secp_pubkey, bytes bls_pubkey))",
 ];
 
 // ---------- Logging ----------
@@ -146,6 +146,7 @@ async function syncStatuses() {
           stake_wei: info.stake.toString(),
           commission_raw: info.commission.toString(),
           unclaimed_rewards_wei: info.unclaimed_rewards.toString(),
+          consensus_stake_wei: info.consensus_stake.toString(),
         };
       } catch (err) {
         log("debug", `Failed to fetch staking data for validator #${v.id}: ${err.message}`);
