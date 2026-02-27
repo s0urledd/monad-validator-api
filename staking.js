@@ -207,8 +207,6 @@ export function getLivePool() {
     // Batch query all validators
     let totalStaked = 0n;
     let bondedTokens = 0n;
-    let pendingStake = 0n;
-    let pendingUnstake = 0n;
     let activeCount = 0;
     const batchSize = 20;
 
@@ -232,21 +230,12 @@ export function getLivePool() {
           bondedTokens += r.consensus_stake;
           activeCount++;
         }
-        if (r.stake > r.consensus_stake) {
-          pendingStake += r.stake - r.consensus_stake;
-        } else if (r.consensus_stake > r.stake) {
-          pendingUnstake += r.consensus_stake - r.stake;
-        }
       }
     }
 
     return {
       bonded_tokens: toMON(bondedTokens),
       total_staked: toMON(totalStaked),
-      pending_stake: toMON(pendingStake),
-      pending_unstake: toMON(pendingUnstake),
-      total_validators: allIds.length,
-      active_validators: activeCount,
     };
   });
 }

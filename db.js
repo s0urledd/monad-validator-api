@@ -101,6 +101,13 @@ export function getValidatorCount() {
   return db.prepare("SELECT COUNT(*) as count FROM validators").get().count;
 }
 
+export function getValidatorCountsByStatus() {
+  const rows = db.prepare("SELECT status, COUNT(*) as count FROM validators GROUP BY status").all();
+  const counts = {};
+  for (const r of rows) counts[r.status || "unknown"] = r.count;
+  return counts;
+}
+
 // ---------- Uptime Events ----------
 export function insertUptimeEventsBatch(events) {
   const stmt = db.prepare(`
