@@ -85,7 +85,7 @@ GET /monad-api/validators/stats                  # Validator count
 
 ```
 GET /monad-api/staking/epoch                     # Current epoch + in_delay_period
-GET /monad-api/staking/pool                      # Bonded tokens, total staked, pending stake/unstake
+GET /monad-api/staking/pool                      # Bonded tokens, total staked, validator counts
 GET /monad-api/staking/validator/:id             # Validator stake, commission, rewards (live)
 GET /monad-api/staking/validator/:id/delegators  # All delegators of a validator (live)
 GET /monad-api/staking/delegator/:address        # All delegations for an address (live)
@@ -104,13 +104,13 @@ GET /monad-api                                   # API info & endpoint list
 ```json
 {
   "success": true,
-  "bonded_tokens": 2338077034,
-  "total_staked": 2617077036.26,
-  "pending_stake": 279000400.93,
-  "pending_unstake": 16000045.2,
-  "total_validators": 229,
-  "active_validators": 200,
-  "epoch": 311,
+  "bonded_tokens": 12300712423.81,
+  "total_staked": 12303076653.87,
+  "total_validators": 187,
+  "active_validators": 170,
+  "pending_validators": 1,
+  "inactive_validators": 16,
+  "epoch": 1163,
   "in_delay_period": false
 }
 ```
@@ -122,6 +122,7 @@ GET /monad-api                                   # API info & endpoint list
   "validator": {
     "id": 41,
     "name": "Allnodes",
+    "secp_address": "0x8a5a...",
     "status": "active",
     "stake": 11000000,
     "commission": 10,
@@ -188,9 +189,9 @@ sudo systemctl enable --now monad-api monad-uptime-logger
 ## Notes
 
 - All monetary values are returned as **raw numbers** (not formatted strings) for safe client-side parsing
-- **Pending stake/unstake** is computed from `execution.stake` vs `consensus_stake` per validator (net difference)
 - **30s in-memory cache** on live RPC calls prevents redundant queries under burst traffic
 - **Epoch watcher** polls every 2 minutes and triggers a full sync on epoch transitions or boundary blocks
+- Validator counts (total/active/pending/inactive) are sourced from the DB, not from on-chain sets
 - SQLite WAL mode enables concurrent reads/writes
 - GitHub sync failures preserve existing data (no data loss)
 
