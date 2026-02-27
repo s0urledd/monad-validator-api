@@ -29,6 +29,18 @@ function toMON(wei) {
   return parseFloat(parseFloat(ethers.formatEther(BigInt(wei))).toFixed(2));
 }
 
+// ---------- Cache ----------
+const CACHE_TTL_MS = 30_000;
+const _cache = new Map();
+
+function cached(key, fn) {
+  const hit = _cache.get(key);
+  if (hit && Date.now() - hit.ts < CACHE_TTL_MS) return hit.p;
+  const p = fn().catch((err) => { _cache.delete(key); throw err; });
+  _cache.set(key, { p, ts: Date.now() });
+  return p;
+}
+
 // ---------- Provider Management ----------
 let _provider = null;
 let _contract = null;
@@ -43,83 +55,91 @@ function getContract() {
 
 // ---------- Validator Queries ----------
 
-export async function getValidatorOnChain(valId) {
-  const contract = getContract();
-  const info = await contract.getValidator.staticCall(valId);
-  return {
-    stake: toMON(info.stake),
-    commission: parseFloat((Number(info.commission) / 1e18 * 100).toFixed(2)),
-    unclaimed_rewards: toMON(info.unclaimed_rewards),
-    consensus_stake: toMON(info.consensus_stake),
-    consensus_commission: parseFloat((Number(info.consensus_commission) / 1e18 * 100).toFixed(2)),
-    snapshot_stake: toMON(info.snapshot_stake),
-    snapshot_commission: parseFloat((Number(info.snapshot_commission) / 1e18 * 100).toFixed(2)),
-    auth_address: info.auth_address,
-    // raw values for DB caching (not exposed in API)
-    _raw: {
-      stake_wei: info.stake.toString(),
-      commission_raw: info.commission.toString(),
-      unclaimed_rewards_wei: info.unclaimed_rewards.toString(),
-    },
-  };
+export function getValidatorOnChain(valId) {
+  return cached(`validator:${valId}`, async () => {
+    const contract = getContract();
+    const info = await contract.getValidator.staticCall(valId);
+    return {
+      stake: toMON(info.stake),
+      commission: parseFloat((Number(info.commission) / 1e18 * 100).toFixed(2)),
+      unclaimed_rewards: toMON(info.unclaimed_rewards),
+      consensus_stake: toMON(info.consensus_stake),
+      consensus_commission: parseFloat((Number(info.consensus_commission) / 1e18 * 100).toFixed(2)),
+      snapshot_stake: toMON(info.snapshot_stake),
+      snapshot_commission: parseFloat((Number(info.snapshot_commission) / 1e18 * 100).toFixed(2)),
+      auth_address: info.auth_address,
+      _raw: {
+        stake_wei: info.stake.toString(),
+        commission_raw: info.commission.toString(),
+        unclaimed_rewards_wei: info.unclaimed_rewards.toString(),
+      },
+    };
+  });
 }
 
 // ---------- Delegator Queries ----------
 
-export async function getDelegatorInfo(valId, delegatorAddress) {
-  const contract = getContract();
-  const result = await contract.getDelegator.staticCall(valId, delegatorAddress);
-  return {
-    stake: toMON(result[0]),
-    unclaimed_rewards: toMON(result[2]),
-    // raw BigInts for aggregation in routes
-    _stake_wei: result[0],
-    _unclaimed_rewards_wei: result[2],
-  };
+export function getDelegatorInfo(valId, delegatorAddress) {
+  return cached(`delegator:${valId}:${delegatorAddress}`, async () => {
+    const contract = getContract();
+    const result = await contract.getDelegator.staticCall(valId, delegatorAddress);
+    return {
+      stake: toMON(result[0]),
+      unclaimed_rewards: toMON(result[2]),
+      _stake_wei: result[0],
+      _unclaimed_rewards_wei: result[2],
+    };
+  });
 }
 
-export async function getAllDelegations(delegatorAddress) {
-  const contract = getContract();
-  const valIds = [];
-  let startValId = 0;
-  let isDone = false;
+export function getAllDelegations(delegatorAddress) {
+  return cached(`delegations:${delegatorAddress}`, async () => {
+    const contract = getContract();
+    const valIds = [];
+    let startValId = 0;
+    let isDone = false;
 
-  while (!isDone) {
-    const result = await contract.getDelegations.staticCall(delegatorAddress, startValId);
-    isDone = result[0];
-    startValId = Number(result[1]);
-    const ids = result[2].map((id) => Number(id));
-    valIds.push(...ids);
-  }
+    while (!isDone) {
+      const result = await contract.getDelegations.staticCall(delegatorAddress, startValId);
+      isDone = result[0];
+      startValId = Number(result[1]);
+      const ids = result[2].map((id) => Number(id));
+      valIds.push(...ids);
+    }
 
-  return valIds;
+    return valIds;
+  });
 }
 
-export async function getAllDelegators(valId) {
-  const contract = getContract();
-  const delegators = [];
-  let startDelegator = ethers.ZeroAddress;
-  let isDone = false;
+export function getAllDelegators(valId) {
+  return cached(`delegators:${valId}`, async () => {
+    const contract = getContract();
+    const delegators = [];
+    let startDelegator = ethers.ZeroAddress;
+    let isDone = false;
 
-  while (!isDone) {
-    const result = await contract.getDelegators.staticCall(valId, startDelegator);
-    isDone = result[0];
-    startDelegator = result[1];
-    delegators.push(...result[2]);
-  }
+    while (!isDone) {
+      const result = await contract.getDelegators.staticCall(valId, startDelegator);
+      isDone = result[0];
+      startDelegator = result[1];
+      delegators.push(...result[2]);
+    }
 
-  return delegators;
+    return delegators;
+  });
 }
 
 // ---------- Epoch & Proposer ----------
 
-export async function getEpochInfo() {
-  const contract = getContract();
-  const result = await contract.getEpoch.staticCall();
-  return {
-    epoch: Number(result[0]),
-    in_delay_period: result[1],
-  };
+export function getEpochInfo() {
+  return cached("epoch", async () => {
+    const contract = getContract();
+    const result = await contract.getEpoch.staticCall();
+    return {
+      epoch: Number(result[0]),
+      in_delay_period: result[1],
+    };
+  });
 }
 
 export async function getProposer() {

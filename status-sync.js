@@ -11,11 +11,14 @@ const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();
 
 const STAKING_ADDRESS = "0x0000000000000000000000000000000000001000";
 
+const EPOCH_POLL_MS = Number(process.env.EPOCH_POLL_MS || 120000);
+
 const STAKING_ABI = [
   "function getConsensusValidatorSet(uint32 startIndex) external returns (bool isDone, uint32 nextIndex, uint64[] valIds)",
   "function getExecutionValidatorSet(uint32 startIndex) external returns (bool isDone, uint32 nextIndex, uint64[] valIds)",
   "function getSnapshotValidatorSet(uint32 startIndex) external returns (bool isDone, uint32 nextIndex, uint64[] valIds)",
   "function getValidator(uint64 valId) external returns (address auth_address, uint256 flags, uint256 stake, uint256 acc_reward_per_token, uint256 commission, uint256 unclaimed_rewards, uint256 consensus_stake, uint256 consensus_commission, uint256 snapshot_stake, uint256 snapshot_commission, bytes secp_pubkey, bytes bls_pubkey)",
+  "function getEpoch() external returns (uint64 epoch, bool inEpochDelayPeriod)",
 ];
 
 // ---------- Logging ----------
@@ -175,23 +178,79 @@ async function syncStatuses() {
   return { updated: validators.length, counts, elapsed };
 }
 
+// ---------- Epoch Watcher ----------
+let _lastEpoch = null;
+let _lastDelayPeriod = null;
+let _epochInterval = null;
+let _syncing = false;
+
+async function checkEpoch() {
+  try {
+    const provider = new ethers.JsonRpcProvider(MONAD_RPC_URL);
+    const contract = new ethers.Contract(STAKING_ADDRESS, STAKING_ABI, provider);
+    const result = await contract.getEpoch.staticCall();
+    const epoch = Number(result[0]);
+    const inDelay = result[1];
+    provider.destroy();
+
+    if (_lastEpoch === null) {
+      _lastEpoch = epoch;
+      _lastDelayPeriod = inDelay;
+      return;
+    }
+
+    const epochChanged = epoch !== _lastEpoch;
+    const boundaryPassed = inDelay && !_lastDelayPeriod;
+
+    _lastEpoch = epoch;
+    _lastDelayPeriod = inDelay;
+
+    if (epochChanged || boundaryPassed) {
+      const reason = epochChanged ? `epoch ${epoch - 1} → ${epoch}` : "boundary block passed";
+      log("info", `Epoch watcher: ${reason}, triggering sync...`);
+      if (!_syncing) {
+        _syncing = true;
+        syncStatuses()
+          .catch((err) => log("error", "Epoch-triggered sync failed:", err.message))
+          .finally(() => { _syncing = false; });
+      }
+    }
+  } catch (err) {
+    log("debug", `Epoch poll failed: ${err.message}`);
+  }
+}
+
 // ---------- Scheduled Sync ----------
 let syncInterval = null;
 
 export function startStatusSync() {
   syncStatuses().catch((err) => log("error", "Initial status sync failed:", err.message));
 
+  // Default periodic sync (fallback)
   syncInterval = setInterval(() => {
-    syncStatuses().catch((err) => log("error", "Periodic status sync failed:", err.message));
+    if (!_syncing) {
+      _syncing = true;
+      syncStatuses()
+        .catch((err) => log("error", "Periodic status sync failed:", err.message))
+        .finally(() => { _syncing = false; });
+    }
   }, SYNC_INTERVAL_MS);
 
-  log("info", `Status sync scheduled every ${SYNC_INTERVAL_MS / 1000 / 60} minutes`);
+  // Epoch watcher — polls every 60s, triggers sync on epoch/boundary change
+  _epochInterval = setInterval(checkEpoch, EPOCH_POLL_MS);
+  checkEpoch();
+
+  log("info", `Status sync scheduled every ${SYNC_INTERVAL_MS / 1000 / 60}min + epoch watcher every ${EPOCH_POLL_MS / 1000}s`);
 }
 
 export function stopStatusSync() {
   if (syncInterval) {
     clearInterval(syncInterval);
     syncInterval = null;
+  }
+  if (_epochInterval) {
+    clearInterval(_epochInterval);
+    _epochInterval = null;
   }
 }
 
