@@ -47,8 +47,9 @@ router.get("/epoch", async (req, res) => {
 // GET /monad-api/staking/pool
 router.get("/pool", async (req, res) => {
   try {
+    const includeDetails = req.query.details === "true";
     const [pool, epoch] = await Promise.all([
-      getLivePool(),
+      getLivePool(includeDetails),
       getEpochInfo().catch(() => null),
     ]);
 
