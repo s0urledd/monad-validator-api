@@ -1,5 +1,6 @@
 // src/routes/validators.js - API Routes
 import { Router } from "express";
+import { ethers } from "ethers";
 import {
   resolveValidator,
   getAllValidators,
@@ -36,6 +37,9 @@ function formatValidator(v) {
     ...(extra.discord && { discord: extra.discord }),
     ...(extra.telegram && { telegram: extra.telegram }),
     status: v.status || "unknown",
+    stake: v.stake_wei ? ethers.formatEther(BigInt(v.stake_wei)) : null,
+    commission: v.commission_raw ? Number(v.commission_raw) / 100 : null,
+    unclaimed_rewards: v.unclaimed_rewards_wei ? ethers.formatEther(BigInt(v.unclaimed_rewards_wei)) : null,
     updated_at: toISO(Math.max(v.updated_at || 0, v.status_updated_at || 0) || null)
   };
 }

@@ -52,7 +52,10 @@ try {
 // status columns yoksa ekle
 for (const col of [
   "status TEXT DEFAULT 'unknown'",
-  "status_updated_at INTEGER"
+  "status_updated_at INTEGER",
+  "stake_wei TEXT",
+  "commission_raw TEXT",
+  "unclaimed_rewards_wei TEXT"
 ]) {
   try {
     db.exec(`ALTER TABLE validators ADD COLUMN ${col}`);
@@ -193,6 +196,49 @@ export function updateAllValidatorStatuses(statusMap) {
     }
   });
   return txn(statusMap);
+}
+
+// ---------- Staking Data Updates ----------
+const updateStakingStmt = db.prepare(`
+  UPDATE validators SET stake_wei = ?, commission_raw = ?, unclaimed_rewards_wei = ?
+  WHERE id = ?
+`);
+
+export function updateValidatorStakingData(id, stakeWei, commissionRaw, unclaimedRewardsWei) {
+  return updateStakingStmt.run(stakeWei, commissionRaw, unclaimedRewardsWei, id);
+}
+
+export function updateAllValidatorStakingData(dataMap) {
+  const txn = db.transaction((map) => {
+    for (const [id, data] of Object.entries(map)) {
+      updateStakingStmt.run(data.stake_wei, data.commission_raw, data.unclaimed_rewards_wei, parseInt(id));
+    }
+  });
+  return txn(dataMap);
+}
+
+export function getStakingPool() {
+  const rows = db.prepare("SELECT status, stake_wei FROM validators WHERE stake_wei IS NOT NULL").all();
+
+  let totalStaked = 0n;
+  let bondedTokens = 0n;
+  let activeCount = 0;
+
+  for (const r of rows) {
+    const s = BigInt(r.stake_wei);
+    totalStaked += s;
+    if (r.status === "active") {
+      bondedTokens += s;
+      activeCount++;
+    }
+  }
+
+  return {
+    bonded_tokens: bondedTokens.toString(),
+    total_staked: totalStaked.toString(),
+    total_validators: rows.length,
+    active_validators: activeCount,
+  };
 }
 
 export default db;

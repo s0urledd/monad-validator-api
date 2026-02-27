@@ -3,7 +3,7 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import { ethers } from "ethers";
-import { getAllValidators, updateAllValidatorStatuses, upsertValidator, normalizeAddress } from "./db.js";
+import { getAllValidators, updateAllValidatorStatuses, updateAllValidatorStakingData, upsertValidator, normalizeAddress } from "./db.js";
 
 const MONAD_RPC_URL = process.env.MONAD_RPC_URL || "http://127.0.0.1:8080";
 const SYNC_INTERVAL_MS = Number(process.env.STATUS_SYNC_INTERVAL_MS || 3600000);
@@ -130,6 +130,35 @@ async function syncStatuses() {
   } catch (err) {
     log("error", "Failed to update DB:", err.message);
     return { updated: 0, error: err.message };
+  }
+
+  // Fetch on-chain staking data (stake, commission, rewards) for all validators
+  log("info", "Fetching on-chain staking data for all validators...");
+  const stakingDataMap = {};
+  const batchSize = 10;
+
+  for (let i = 0; i < validators.length; i += batchSize) {
+    const batch = validators.slice(i, i + batchSize);
+    const promises = batch.map(async (v) => {
+      try {
+        const info = await contract.getValidator.staticCall(v.id);
+        stakingDataMap[v.id] = {
+          stake_wei: info.stake.toString(),
+          commission_raw: info.commission.toString(),
+          unclaimed_rewards_wei: info.unclaimed_rewards.toString(),
+        };
+      } catch (err) {
+        log("debug", `Failed to fetch staking data for validator #${v.id}: ${err.message}`);
+      }
+    });
+    await Promise.all(promises);
+  }
+
+  try {
+    updateAllValidatorStakingData(stakingDataMap);
+    log("info", `Staking data updated for ${Object.keys(stakingDataMap).length} validators`);
+  } catch (err) {
+    log("error", "Failed to update staking data:", err.message);
   }
 
   const counts = { active: 0, pending: 0, inactive: 0 };
