@@ -9,7 +9,7 @@ const STAKING_ADDRESS = "0x0000000000000000000000000000000000001000";
 
 const STAKING_ABI = [
   // Validator info
-  "function getValidator(uint64 valId) external returns (tuple(uint256 stake, uint256 acc, uint256 commission, bytes secp_pubkey, bytes bls_pubkey, uint256 address_flags, uint256 unclaimed_rewards, address auth_address))",
+  "function getValidator(uint64 valId) external returns (tuple(address auth_address, uint256 flags, uint256 stake, uint256 acc_reward_per_token, uint256 commission, uint256 unclaimed_rewards, uint256 consensus_stake, uint256 consensus_commission, uint256 snapshot_stake, uint256 snapshot_commission, bytes secp_pubkey, bytes bls_pubkey))",
   // Delegator info
   "function getDelegator(uint64 validatorId, address delegator) external returns (uint256 stake, uint256 accRewardPerToken, uint256 unclaimedRewards, int256 deltaStake, int256 nextDeltaStake, uint64 deltaEpoch, uint64 nextDeltaEpoch)",
   // Delegations for a delegator (paginated)
@@ -48,7 +48,11 @@ export async function getValidatorOnChain(valId) {
     commission_raw: info.commission.toString(),
     unclaimed_rewards: ethers.formatEther(info.unclaimed_rewards),
     unclaimed_rewards_wei: info.unclaimed_rewards.toString(),
-    acc_reward_per_token: info.acc.toString(),
+    acc_reward_per_token: info.acc_reward_per_token.toString(),
+    consensus_stake: ethers.formatEther(info.consensus_stake),
+    consensus_commission: Number(info.consensus_commission) / 100,
+    snapshot_stake: ethers.formatEther(info.snapshot_stake),
+    snapshot_commission: Number(info.snapshot_commission) / 100,
     auth_address: info.auth_address,
   };
 }
