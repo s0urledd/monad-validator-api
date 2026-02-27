@@ -67,9 +67,7 @@ app.get("/monad-api", (req, res) => {
         "GET /monad-api/staking/pool": "Total staked & bonded tokens",
         "GET /monad-api/staking/validator/:valId": "On-chain validator data (stake, commission, rewards)",
         "GET /monad-api/staking/validator/:valId/delegators": "List all delegators of a validator",
-        "GET /monad-api/staking/delegator/:address": "All delegations for an address",
-        "GET /monad-api/staking/delegator/:address/rewards": "Unclaimed rewards across all validators",
-        "GET /monad-api/staking/delegator/:address/validator/:valId": "Specific delegation details",
+        "GET /monad-api/staking/delegator/:address": "All delegations & rewards for an address",
       },
     },
     query_params: {
