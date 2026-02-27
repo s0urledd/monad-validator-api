@@ -55,7 +55,8 @@ for (const col of [
   "status_updated_at INTEGER",
   "stake_wei TEXT",
   "commission_raw TEXT",
-  "unclaimed_rewards_wei TEXT"
+  "unclaimed_rewards_wei TEXT",
+  "consensus_stake_wei TEXT"
 ]) {
   try {
     db.exec(`ALTER TABLE validators ADD COLUMN ${col}`);
@@ -200,42 +201,54 @@ export function updateAllValidatorStatuses(statusMap) {
 
 // ---------- Staking Data Updates ----------
 const updateStakingStmt = db.prepare(`
-  UPDATE validators SET stake_wei = ?, commission_raw = ?, unclaimed_rewards_wei = ?
+  UPDATE validators SET stake_wei = ?, commission_raw = ?, unclaimed_rewards_wei = ?, consensus_stake_wei = ?
   WHERE id = ?
 `);
 
-export function updateValidatorStakingData(id, stakeWei, commissionRaw, unclaimedRewardsWei) {
-  return updateStakingStmt.run(stakeWei, commissionRaw, unclaimedRewardsWei, id);
+export function updateValidatorStakingData(id, stakeWei, commissionRaw, unclaimedRewardsWei, consensusStakeWei) {
+  return updateStakingStmt.run(stakeWei, commissionRaw, unclaimedRewardsWei, consensusStakeWei || null, id);
 }
 
 export function updateAllValidatorStakingData(dataMap) {
   const txn = db.transaction((map) => {
     for (const [id, data] of Object.entries(map)) {
-      updateStakingStmt.run(data.stake_wei, data.commission_raw, data.unclaimed_rewards_wei, parseInt(id));
+      updateStakingStmt.run(data.stake_wei, data.commission_raw, data.unclaimed_rewards_wei, data.consensus_stake_wei || null, parseInt(id));
     }
   });
   return txn(dataMap);
 }
 
 export function getStakingPool() {
-  const rows = db.prepare("SELECT status, stake_wei FROM validators WHERE stake_wei IS NOT NULL").all();
+  const rows = db.prepare("SELECT status, stake_wei, consensus_stake_wei FROM validators WHERE stake_wei IS NOT NULL").all();
 
   let totalStaked = 0n;
   let bondedTokens = 0n;
+  let pendingActivation = 0n;
+  let pendingDeactivation = 0n;
   let activeCount = 0;
 
   for (const r of rows) {
-    const s = BigInt(r.stake_wei);
-    totalStaked += s;
+    const stake = BigInt(r.stake_wei);
+    const consensus = r.consensus_stake_wei ? BigInt(r.consensus_stake_wei) : stake;
+    totalStaked += stake;
     if (r.status === "active") {
-      bondedTokens += s;
+      bondedTokens += stake;
       activeCount++;
+    }
+    // stake > consensus_stake = new delegations pending activation next epoch
+    // consensus_stake > stake = undelegations pending deactivation next epoch
+    if (stake > consensus) {
+      pendingActivation += stake - consensus;
+    } else if (consensus > stake) {
+      pendingDeactivation += consensus - stake;
     }
   }
 
   return {
     bonded_tokens: bondedTokens.toString(),
     total_staked: totalStaked.toString(),
+    pending_activation: pendingActivation.toString(),
+    pending_deactivation: pendingDeactivation.toString(),
     total_validators: rows.length,
     active_validators: activeCount,
   };

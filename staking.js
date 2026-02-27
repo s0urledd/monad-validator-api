@@ -25,10 +25,8 @@ const STAKING_ABI = [
 ];
 
 // ---------- Helpers ----------
-function formatMON(wei) {
-  const raw = ethers.formatEther(BigInt(wei));
-  const num = parseFloat(parseFloat(raw).toFixed(2));
-  return num.toLocaleString("en-US", { maximumFractionDigits: 2 });
+function toMON(wei) {
+  return parseFloat(parseFloat(ethers.formatEther(BigInt(wei))).toFixed(2));
 }
 
 // ---------- Provider Management ----------
@@ -49,12 +47,12 @@ export async function getValidatorOnChain(valId) {
   const contract = getContract();
   const info = await contract.getValidator.staticCall(valId);
   return {
-    stake: formatMON(info.stake),
+    stake: toMON(info.stake),
     commission: parseFloat((Number(info.commission) / 1e18 * 100).toFixed(2)),
-    unclaimed_rewards: formatMON(info.unclaimed_rewards),
-    consensus_stake: formatMON(info.consensus_stake),
+    unclaimed_rewards: toMON(info.unclaimed_rewards),
+    consensus_stake: toMON(info.consensus_stake),
     consensus_commission: parseFloat((Number(info.consensus_commission) / 1e18 * 100).toFixed(2)),
-    snapshot_stake: formatMON(info.snapshot_stake),
+    snapshot_stake: toMON(info.snapshot_stake),
     snapshot_commission: parseFloat((Number(info.snapshot_commission) / 1e18 * 100).toFixed(2)),
     auth_address: info.auth_address,
     // raw values for DB caching (not exposed in API)
@@ -72,8 +70,8 @@ export async function getDelegatorInfo(valId, delegatorAddress) {
   const contract = getContract();
   const result = await contract.getDelegator.staticCall(valId, delegatorAddress);
   return {
-    stake: formatMON(result[0]),
-    unclaimed_rewards: formatMON(result[2]),
+    stake: toMON(result[0]),
+    unclaimed_rewards: toMON(result[2]),
     // raw BigInts for aggregation in routes
     _stake_wei: result[0],
     _unclaimed_rewards_wei: result[2],

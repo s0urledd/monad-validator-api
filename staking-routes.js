@@ -17,10 +17,8 @@ import {
 const router = Router();
 
 // ---------- Helpers ----------
-function formatMON(wei) {
-  const raw = ethers.formatEther(BigInt(wei));
-  const num = parseFloat(parseFloat(raw).toFixed(2));
-  return num.toLocaleString("en-US", { maximumFractionDigits: 2 });
+function toMON(wei) {
+  return parseFloat(parseFloat(ethers.formatEther(BigInt(wei))).toFixed(2));
 }
 
 // ---------- Epoch ----------
@@ -47,16 +45,22 @@ router.get("/epoch", async (req, res) => {
 // ---------- Pool ----------
 
 // GET /monad-api/staking/pool
-router.get("/pool", (req, res) => {
+router.get("/pool", async (req, res) => {
   try {
-    const pool = getStakingPool();
+    const [pool, epoch] = await Promise.all([
+      Promise.resolve(getStakingPool()),
+      getEpochInfo().catch(() => null),
+    ]);
 
     res.json({
       success: true,
-      bonded_tokens: formatMON(pool.bonded_tokens),
-      total_staked: formatMON(pool.total_staked),
+      bonded_tokens: toMON(pool.bonded_tokens),
+      total_staked: toMON(pool.total_staked),
+      pending_activation: toMON(pool.pending_activation),
+      pending_deactivation: toMON(pool.pending_deactivation),
       total_validators: pool.total_validators,
       active_validators: pool.active_validators,
+      ...(epoch && { epoch: epoch.epoch, in_delay_period: epoch.in_delay_period }),
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -122,19 +126,15 @@ router.get("/validator/:valId/delegators", async (req, res) => {
           const info = await getDelegatorInfo(valId, addr);
           return { address: addr, stake: info.stake, unclaimed_rewards: info.unclaimed_rewards };
         } catch {
-          return { address: addr, stake: "0", unclaimed_rewards: "0" };
+          return { address: addr, stake: 0, unclaimed_rewards: 0 };
         }
       });
       const results = await Promise.all(promises);
       delegators.push(...results);
     }
 
-    // Sort by stake descending (strip commas for numeric comparison)
-    delegators.sort((a, b) => {
-      const sa = parseFloat(String(a.stake).replace(/,/g, "")) || 0;
-      const sb = parseFloat(String(b.stake).replace(/,/g, "")) || 0;
-      return sb - sa;
-    });
+    // Sort by stake descending
+    delegators.sort((a, b) => (b.stake || 0) - (a.stake || 0));
 
     res.json({
       success: true,
@@ -187,8 +187,8 @@ router.get("/delegator/:address", async (req, res) => {
       } catch {
         delegations.push({
           validator_id: valId,
-          stake: "0",
-          unclaimed_rewards: "0",
+          stake: 0,
+          unclaimed_rewards: 0,
         });
       }
     }
@@ -196,8 +196,8 @@ router.get("/delegator/:address", async (req, res) => {
     res.json({
       success: true,
       address: checksumAddress,
-      total_staked: formatMON(totalStaked),
-      total_rewards: formatMON(totalRewards),
+      total_staked: toMON(totalStaked),
+      total_rewards: toMON(totalRewards),
       delegation_count: delegations.length,
       delegations,
     });
