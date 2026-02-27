@@ -9,6 +9,7 @@ import stakingRoutes from "./staking-routes.js";
 import { startPeriodicSync } from "./github-sync.js";
 import { startStatusSync } from "./status-sync.js";
 import { getValidatorCount } from "./db.js";
+import { rateLimit } from "./rate-limit.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -28,6 +29,9 @@ function log(level, ...args) {
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// Global rate limit: 60 req/min per IP
+app.use(rateLimit({ windowMs: 60_000, max: 60 }));
 
 // Request logging
 app.use((req, res, next) => {
@@ -86,8 +90,8 @@ app.get("/monad-api", (req, res) => {
 app.use("/monad-api/validators", validatorRoutes);
 app.use("/monad-api/validator", validatorRoutes);
 
-// Staking & Delegation routes
-app.use("/monad-api/staking", stakingRoutes);
+// Staking & Delegation routes (stricter limit + 30s timeout for heavy RPC calls)
+app.use("/monad-api/staking", rateLimit({ windowMs: 60_000, max: 20, timeoutMs: 30_000 }), stakingRoutes);
 
 // 404 handler
 app.use((req, res) => {
