@@ -227,7 +227,7 @@ export function getLivePool() {
 
       for (const r of results) {
         if (!r) continue;
-        totalStaked += r.stake;
+        totalStaked += r.stake > r.consensus_stake ? r.stake : r.consensus_stake;
         if (consensusSet.has(r.valId)) {
           bondedTokens += r.consensus_stake;
           activeCount++;
@@ -243,8 +243,8 @@ export function getLivePool() {
     return {
       bonded_tokens: toMON(bondedTokens),
       total_staked: toMON(totalStaked),
-      pending_stake: toMON(pendingStake),
-      pending_unstake: toMON(pendingUnstake),
+      pending_activation: toMON(pendingStake),
+      pending_deactivation: toMON(pendingUnstake),
       total_validators: allIds.length,
       active_validators: activeCount,
     };
