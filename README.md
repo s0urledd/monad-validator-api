@@ -1,243 +1,199 @@
 # Monad Validator API
 
-Monad validatorleri için metadata ve uptime tracking API'si.
+Validator metadata, uptime tracking, and on-chain staking data API for Monad.
 
-## Özellikler
+## Features
 
-- ✅ **Validator Metadata**: GitHub'dan otomatik sync (saatlik)
-- ✅ **Uptime Tracking**: Real-time log analizi (finalized/timeout)
-- ✅ **Çift Lookup**: Validator ID veya 0x adres ile sorgulama
-- ✅ **Rolling Window**: Son 24 saat (veya özelleştirilebilir) uptime
-- ✅ **Lightweight**: SQLite tabanlı, MongoDB gerektirmez
+- **Validator Metadata** — Auto-synced from GitHub (hourly)
+- **Uptime Tracking** — Real-time log analysis (finalized/timeout rounds)
+- **On-Chain Staking** — Live queries to the staking precompile (`0x...1000`)
+- **Delegation Data** — Per-validator delegator lists, per-address delegation summaries
+- **Epoch Awareness** — Auto-syncs on epoch transitions and boundary blocks
+- **Lightweight** — SQLite + in-memory cache, no external DB required
 
-## Mimari
+## Architecture
 
 ```
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────┐
-│  GitHub Repo    │────▶│  github-sync.js  │────▶│             │
-│  (metadata)     │     │  (saatlik)       │     │   SQLite    │
-└─────────────────┘     └──────────────────┘     │   Database  │
-                                                  │             │
-┌─────────────────┐     ┌──────────────────┐     │  monad.db   │
-│ monad-ledger-   │────▶│    logger.js     │────▶│             │
-│ tail (logs)     │     │  (real-time)     │     └──────┬──────┘
-└─────────────────┘     └──────────────────┘            │
-                                                        │
-                        ┌──────────────────┐            │
-                        │    index.js      │◀───────────┘
-                        │   (Express API)  │
-                        └──────────────────┘
-                               ▲
-                               │ HTTP
-                        ┌──────┴──────┐
-                        │   Clients   │
-                        └─────────────┘
+┌─────────────────┐     ┌──────────────────┐
+│  GitHub Repo    │────▶│  github-sync.js  │──┐
+│  (metadata)     │     │  (hourly)        │  │
+└─────────────────┘     └──────────────────┘  │
+                                               ▼
+┌─────────────────┐     ┌──────────────────┐  ┌─────────────┐
+│ monad-ledger-   │────▶│    logger.js     │─▶│   SQLite    │
+│ tail (logs)     │     │  (real-time)     │  │  monad.db   │
+└─────────────────┘     └──────────────────┘  └──────┬──────┘
+                                                      │
+┌─────────────────┐     ┌──────────────────┐          │
+│ Staking         │────▶│  status-sync.js  │──────────┘
+│ Precompile      │     │  (epoch watcher) │          │
+└─────────────────┘     └──────────────────┘          │
+                                                      ▼
+                        ┌──────────────────┐   ┌─────────────┐
+                        │    index.js      │◀──│  staking.js │
+                        │  (Express API)   │   │  (RPC+cache)│
+                        └───────┬──────────┘   └─────────────┘
+                                │ HTTP
+                         ┌──────┴──────┐
+                         │   Clients   │
+                         └─────────────┘
 ```
 
-## Kurulum
+## Data Sources
+
+| Source | What | Freshness |
+|--------|------|-----------|
+| **SQLite (cached)** | Validator list, stake, commission, uptime stats, pool totals | Synced hourly + on epoch change |
+| **Live RPC** | `/staking/validator/:id`, `/staking/delegator/:addr`, epoch info | Real-time (30s in-memory cache) |
+| **GitHub** | Validator names, logos, websites, social links | Hourly |
+
+## Setup
 
 ```bash
-# Clone & Install
-cd /opt
-git clone <repo> monad-api
-cd monad-api
+git clone <repo> monad-api && cd monad-api
 npm install
-
-# .env dosyası oluştur
-cp .env.example .env
-nano .env
-
-# İlk metadata sync
-npm run sync
-
-# Test et
-npm start
+cp .env.example .env   # edit with your values
+npm run sync            # initial metadata sync
+npm start               # start API server
 ```
 
-## Servisler
+## Processes
 
-3 ayrı proses çalışır:
-
-| Proses | Komut | Açıklama |
-|--------|-------|----------|
-| API Server | `npm start` | Express HTTP server |
-| Uptime Logger | `npm run logger` | journalctl → SQLite |
-| Metadata Sync | Otomatik | API içinde çalışır |
-
-### Systemd ile Production
-
-```bash
-# Servis dosyalarını kopyala
-sudo cp systemd/monad-api.service /etc/systemd/system/
-sudo cp systemd/monad-uptime-logger.service /etc/systemd/system/
-
-# Etkinleştir ve başlat
-sudo systemctl daemon-reload
-sudo systemctl enable --now monad-api monad-uptime-logger
-
-# Durumu kontrol et
-sudo systemctl status monad-api monad-uptime-logger
-```
+| Process | Command | Description |
+|---------|---------|-------------|
+| API Server | `npm start` | Express HTTP server + status sync + epoch watcher |
+| Uptime Logger | `npm run logger` | journalctl → SQLite (real-time) |
+| Metadata Sync | Built-in | Runs inside API server (hourly) |
+| Status Sync | Built-in | Runs inside API server (hourly + epoch transitions) |
 
 ## API Endpoints
 
-### Base URL
+**Base URL:** `http://localhost:3000/monad-api`
+
+### Validators
+
 ```
-http://localhost:3000/monad-api
+GET /monad-api/validators                        # All validators (metadata + stake)
+GET /monad-api/validators/:idOrAddress           # Single validator by ID or secp address
+GET /monad-api/validators/uptime                 # All validators uptime (?window=24&sort=uptime)
+GET /monad-api/validators/uptime/:idOrAddress    # Single validator uptime
+GET /monad-api/validators/uptime/:id/history     # Round-by-round history (?limit=49)
+GET /monad-api/validators/stats                  # Validator count
 ```
 
-### Endpoints
+### Staking (On-Chain)
 
-#### 1. Tüm Validatorler
-```bash
-GET /monad-api/validators
+```
+GET /monad-api/staking/epoch                     # Current epoch + in_delay_period
+GET /monad-api/staking/pool                      # Bonded tokens, total staked, pending stake/unstake
+GET /monad-api/staking/validator/:id             # Validator stake, commission, rewards (live)
+GET /monad-api/staking/validator/:id/delegators  # All delegators of a validator (live)
+GET /monad-api/staking/delegator/:address        # All delegations for an address (live)
 ```
 
-Response:
+### System
+
+```
+GET /health                                      # Health check
+GET /monad-api                                   # API info & endpoint list
+```
+
+### Example Responses
+
+**`GET /monad-api/staking/pool`**
 ```json
 {
   "success": true,
-  "count": 50,
-  "validators": [
-    {
-      "id": 1,
-      "secp_address": "0x1234...",
-      "bls_public_key": "0xabc...",
-      "name": "Validator One",
-      "website": "https://...",
-      "description": "...",
-      "logo_url": "https://..."
-    }
-  ]
+  "bonded_tokens": 2338077034,
+  "total_staked": 2617077036.26,
+  "pending_stake": 279000400.93,
+  "pending_unstake": 16000045.2,
+  "total_validators": 229,
+  "active_validators": 200,
+  "epoch": 311,
+  "in_delay_period": false
 }
 ```
 
-#### 2. Tek Validator (ID veya Adres)
-```bash
-# ID ile
-GET /monad-api/validators/1
-
-# 0x adresi ile
-GET /monad-api/validators/0x1234abcd...
-```
-
-Response:
+**`GET /monad-api/staking/validator/41`**
 ```json
 {
   "success": true,
   "validator": {
-    "id": 1,
-    "secp_address": "0x1234...",
-    "name": "Validator One",
-    ...
+    "id": 41,
+    "name": "Allnodes",
+    "status": "active",
+    "stake": 11000000,
+    "commission": 10,
+    "unclaimed_rewards": 54150.55,
+    "auth_address": "0x8a5a..."
   }
 }
 ```
 
-#### 3. Tüm Validatorlerin Uptime'ı
-```bash
-GET /monad-api/validators/uptime
-GET /monad-api/validators/uptime?window=12&sort=uptime
-```
-
-Query params:
-- `window`: Saat (1-168, varsayılan 24)
-- `sort`: `uptime` (azalan) veya `id` (artan)
-
-Response:
+**`GET /monad-api/staking/delegator/0xbf4b...`**
 ```json
 {
   "success": true,
-  "window_hours": 24,
-  "count": 50,
-  "validators": [
+  "address": "0xBF4b...",
+  "total_staked": 100000,
+  "total_rewards": 18868.75,
+  "delegation_count": 1,
+  "delegations": [
     {
-      "validator_id": 1,
-      "validator_name": "Validator One",
-      "secp_address": "0x1234...",
-      "window_hours": 24,
-      "finalized_count": 8640,
-      "timeout_count": 10,
-      "total_events": 8650,
-      "uptime_percent": 99.88,
-      "since_timestamp": 1706000000,
-      "since_utc": "2024-01-23T12:00:00.000Z"
+      "validator_id": 40,
+      "validator_name": "Huginn",
+      "validator_status": "active",
+      "stake": 100000,
+      "unclaimed_rewards": 18868.75
     }
   ]
 }
 ```
 
-#### 4. Tek Validator Uptime
-```bash
-GET /monad-api/validators/uptime/1
-GET /monad-api/validators/uptime/0x1234...?window=6&limit=50
-```
+### Query Parameters
 
-Query params:
-- `window`: Saat (1-168, varsayılan 24)
-- `limit`: Son event sayısı (1-1000, varsayılan 100)
-
-Response:
-```json
-{
-  "success": true,
-  "uptime": {
-    "validator_id": 1,
-    "validator_name": "Validator One",
-    "uptime_percent": 99.88,
-    ...
-  },
-  "recent_events": [
-    {
-      "round": 123456,
-      "event_type": "finalized",
-      "timestamp": 1706086400,
-      "timestamp_utc": "2024-01-24T12:00:00.000Z"
-    }
-  ]
-}
-```
-
-#### 5. Health Check
-```bash
-GET /health
-```
+| Endpoint | Param | Default | Range | Description |
+|----------|-------|---------|-------|-------------|
+| `/uptime` | `window` | 24 | 1-168 | Hours window |
+| `/uptime` | `sort` | uptime | uptime, id | Sort order |
+| `/uptime/:id/history` | `limit` | 49 | 1-100 | Number of rounds |
 
 ## Environment Variables
 
-| Değişken | Varsayılan | Açıklama |
-|----------|-----------|----------|
+| Variable | Default | Description |
+|----------|---------|-------------|
 | `PORT` | 3000 | API port |
 | `HOST` | 0.0.0.0 | Bind address |
-| `JOURNAL_UNIT` | monad-ledger-tail | Systemd unit adı |
-| `GITHUB_RAW_BASE` | ...validator-info/main/mainnet | Metadata kaynağı |
-| `METADATA_SYNC_INTERVAL_MS` | 3600000 | Metadata sync sıklığı (1 saat) |
-| `UPTIME_RETENTION_HOURS` | 48 | Eski eventleri temizle |
-| `UPTIME_WINDOW_HOURS` | 24 | Varsayılan uptime penceresi |
-| `LOG_LEVEL` | info | error/warn/info/debug |
+| `MONAD_RPC_URL` | http://127.0.0.1:8080 | Monad RPC endpoint |
+| `JOURNAL_UNIT` | monad-ledger-tail | Systemd unit for log tailing |
+| `GITHUB_RAW_BASE` | ...validator-info/main/mainnet | Metadata source |
+| `METADATA_SYNC_INTERVAL_MS` | 3600000 | Metadata sync interval (1h) |
+| `STATUS_SYNC_INTERVAL_MS` | 3600000 | Staking data sync interval (1h) |
+| `EPOCH_POLL_MS` | 120000 | Epoch watcher poll interval (2min) |
+| `UPTIME_RETENTION_HOURS` | 48 | Old event cleanup threshold |
+| `LOG_LEVEL` | info | error / warn / info / debug |
 
-## Mevcut Projenle Entegrasyon
+## Systemd (Production)
 
-`timeout-monitor.js` dosyanızla birlikte çalışabilir. Her iki sistem de aynı `journalctl` kaynağını okur:
+See `services.txt` for systemd unit files. Quick setup:
 
 ```bash
-# Terminal 1: Timeout Monitor (Telegram alerts)
-node timeout-monitor.js
-
-# Terminal 2: Uptime Logger (SQLite'a yazar)
-npm run logger
-
-# Terminal 3: API Server
-npm start
+sudo cp systemd/monad-api.service /etc/systemd/system/
+sudo cp systemd/monad-uptime-logger.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now monad-api monad-uptime-logger
 ```
 
-## Notlar
+## Notes
 
-- **Metadata güvenliği**: GitHub'dan çekilemezse mevcut data korunur
-- **SQLite WAL mode**: Concurrent read/write destekler
-- **Memory efficient**: Event buffer ile batch insert
-- **Dedupe**: Aynı round tekrar kaydedilmez
+- All monetary values are returned as **raw numbers** (not formatted strings) for safe client-side parsing
+- **Pending stake/unstake** is computed from `execution.stake` vs `consensus_stake` per validator (net difference)
+- **30s in-memory cache** on live RPC calls prevents redundant queries under burst traffic
+- **Epoch watcher** polls every 2 minutes and triggers a full sync on epoch transitions or boundary blocks
+- SQLite WAL mode enables concurrent reads/writes
+- GitHub sync failures preserve existing data (no data loss)
 
-## Lisans
+## License
 
 MIT
