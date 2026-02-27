@@ -5,8 +5,9 @@ dotenv.config();
 import fetch from "node-fetch";
 import { upsertValidator, getValidatorCount, normalizeAddress } from "./db.js";
 
-const GITHUB_API_URL = "https://api.github.com/repos/monad-developers/validator-info/contents/testnet";
-const GITHUB_RAW_BASE = "https://raw.githubusercontent.com/monad-developers/validator-info/main/testnet";
+const NETWORK = process.env.NETWORK || "testnet";
+const GITHUB_API_URL = `https://api.github.com/repos/monad-developers/validator-info/contents/${NETWORK}`;
+const GITHUB_RAW_BASE = `https://raw.githubusercontent.com/monad-developers/validator-info/main/${NETWORK}`;
 
 const SYNC_INTERVAL_MS = Number(process.env.METADATA_SYNC_INTERVAL_MS || 3600000);
 const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();

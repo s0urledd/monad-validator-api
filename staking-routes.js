@@ -80,6 +80,16 @@ router.get("/validator/:valId", async (req, res) => {
     const validator = getValidatorById(valId);
     const onChain = await getValidatorOnChain(valId);
 
+    // Query auth_address's delegation rewards
+    let authDelegation = null;
+    if (onChain.auth_address && onChain.auth_address !== ethers.ZeroAddress) {
+      try {
+        authDelegation = await getDelegatorInfo(valId, onChain.auth_address);
+      } catch {
+        // auth_address may not be a delegator
+      }
+    }
+
     res.json({
       success: true,
       validator: {
@@ -89,7 +99,7 @@ router.get("/validator/:valId", async (req, res) => {
         status: validator?.status || "unknown",
         stake: onChain.stake,
         commission: onChain.commission,
-        unclaimed_rewards: onChain.unclaimed_rewards,
+        unclaimed_rewards: authDelegation ? authDelegation.unclaimed_rewards : 0,
         auth_address: onChain.auth_address,
       },
     });
