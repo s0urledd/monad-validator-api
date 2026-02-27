@@ -85,7 +85,7 @@ GET /monad-api/validators/stats                  # Validator count
 
 ```
 GET /monad-api/staking/epoch                     # Current epoch + in_delay_period
-GET /monad-api/staking/pool                      # Bonded tokens, total staked, validator counts
+GET /monad-api/staking/pool                      # Bonded tokens, total staked, on-chain validator counts
 GET /monad-api/staking/validator/:id             # Validator stake, commission, rewards (live)
 GET /monad-api/staking/validator/:id/delegators  # All delegators of a validator (live)
 GET /monad-api/staking/delegator/:address        # All delegations for an address (live)
@@ -106,10 +106,8 @@ GET /monad-api                                   # API info & endpoint list
   "success": true,
   "bonded_tokens": 12300712423.81,
   "total_staked": 12303076653.87,
-  "total_validators": 187,
-  "active_validators": 170,
-  "pending_validators": 1,
-  "inactive_validators": 16,
+  "execution_validators": 187,
+  "consensus_validators": 170,
   "epoch": 1163,
   "in_delay_period": false
 }
@@ -191,7 +189,7 @@ sudo systemctl enable --now monad-api monad-uptime-logger
 - All monetary values are returned as **raw numbers** (not formatted strings) for safe client-side parsing
 - **30s in-memory cache** on live RPC calls prevents redundant queries under burst traffic
 - **Epoch watcher** polls every 2 minutes and triggers a full sync on epoch transitions or boundary blocks
-- Validator counts (total/active/pending/inactive) are sourced from the DB, not from on-chain sets
+- Validator counts (`execution_validators`, `consensus_validators`) are sourced directly from on-chain validator sets
 - SQLite WAL mode enables concurrent reads/writes
 - GitHub sync failures preserve existing data (no data loss)
 
