@@ -19,8 +19,8 @@ const router = Router();
 // ---------- Helpers ----------
 function formatMON(wei) {
   const raw = ethers.formatEther(BigInt(wei));
-  const num = parseFloat(parseFloat(raw).toFixed(4));
-  return num.toLocaleString("en-US", { maximumFractionDigits: 4 });
+  const num = parseFloat(parseFloat(raw).toFixed(2));
+  return num.toLocaleString("en-US", { maximumFractionDigits: 2 });
 }
 
 // ---------- Epoch ----------
