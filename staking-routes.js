@@ -114,35 +114,6 @@ router.get("/validator/:valId", async (req, res) => {
   }
 });
 
-// ---------- Validator Commission ----------
-
-// GET /monad-api/staking/validator/:valId/commission
-router.get("/validator/:valId/commission", async (req, res) => {
-  try {
-    const valId = parseInt(req.params.valId);
-    if (isNaN(valId) || valId <= 0) {
-      return res.status(400).json({ success: false, error: "Invalid validator ID" });
-    }
-
-    const validator = getValidatorById(valId);
-    const onChain = await getValidatorOnChain(valId);
-
-    res.json({
-      success: true,
-      validator_id: valId,
-      validator_name: validator?.name || `Validator #${valId}`,
-      commission: onChain.commission,
-      commission_raw: onChain.commission_raw,
-    });
-  } catch (err) {
-    res.status(503).json({
-      success: false,
-      error: "Failed to query commission",
-      details: err.message,
-    });
-  }
-});
-
 // ---------- Validator Delegators ----------
 
 // GET /monad-api/staking/validator/:valId/delegators
