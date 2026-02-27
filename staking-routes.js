@@ -9,7 +9,7 @@ import {
   getEpochInfo,
   getLivePool,
 } from "./staking.js";
-import { getValidatorById } from "./db.js";
+import { getValidatorById, getValidatorCount } from "./db.js";
 
 const router = Router();
 
@@ -49,9 +49,13 @@ router.get("/pool", async (req, res) => {
       getEpochInfo().catch(() => null),
     ]);
 
+    const { consensus_validators, execution_validators, ...poolData } = pool;
+
     res.json({
       success: true,
-      ...pool,
+      ...poolData,
+      total_validators: getValidatorCount(),
+      active_validators: consensus_validators,
       ...(epoch && { epoch: epoch.epoch, in_delay_period: epoch.in_delay_period }),
     });
   } catch (err) {
