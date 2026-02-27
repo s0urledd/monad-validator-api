@@ -16,14 +16,21 @@ function toISO(epoch) {
   return epoch ? new Date(epoch * 1000).toISOString() : null;
 }
 
+function formatMON(wei) {
+  const raw = ethers.formatEther(BigInt(wei));
+  const [int, dec] = raw.split(".");
+  if (!dec) return int + ".0";
+  return int + "." + dec.slice(0, 4);
+}
+
 function formatValidator(v) {
   if (!v) return null;
-  
+
   let extra = {};
   try {
     extra = JSON.parse(v.raw_json || "{}");
   } catch {}
-  
+
   return {
     id: v.id,
     secp_address: v.secp_address,
@@ -37,9 +44,9 @@ function formatValidator(v) {
     ...(extra.discord && { discord: extra.discord }),
     ...(extra.telegram && { telegram: extra.telegram }),
     status: v.status || "unknown",
-    stake: v.stake_wei ? ethers.formatEther(BigInt(v.stake_wei)) : null,
+    stake: v.stake_wei ? formatMON(v.stake_wei) : null,
     commission: v.commission_raw ? Number(v.commission_raw) / 100 : null,
-    unclaimed_rewards: v.unclaimed_rewards_wei ? ethers.formatEther(BigInt(v.unclaimed_rewards_wei)) : null,
+    unclaimed_rewards: v.unclaimed_rewards_wei ? formatMON(v.unclaimed_rewards_wei) : null,
     updated_at: toISO(Math.max(v.updated_at || 0, v.status_updated_at || 0) || null)
   };
 }

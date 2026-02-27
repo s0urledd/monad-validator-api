@@ -24,6 +24,14 @@ const STAKING_ABI = [
   "function getProposerValId() external returns (uint64)",
 ];
 
+// ---------- Helpers ----------
+function formatMON(wei) {
+  const raw = ethers.formatEther(BigInt(wei));
+  const [int, dec] = raw.split(".");
+  if (!dec) return int + ".0";
+  return int + "." + dec.slice(0, 4);
+}
+
 // ---------- Provider Management ----------
 let _provider = null;
 let _contract = null;
@@ -42,18 +50,20 @@ export async function getValidatorOnChain(valId) {
   const contract = getContract();
   const info = await contract.getValidator.staticCall(valId);
   return {
-    stake: ethers.formatEther(info.stake),
-    stake_wei: info.stake.toString(),
+    stake: formatMON(info.stake),
     commission: Number(info.commission) / 100,
-    commission_raw: info.commission.toString(),
-    unclaimed_rewards: ethers.formatEther(info.unclaimed_rewards),
-    unclaimed_rewards_wei: info.unclaimed_rewards.toString(),
-    acc_reward_per_token: info.acc_reward_per_token.toString(),
-    consensus_stake: ethers.formatEther(info.consensus_stake),
+    unclaimed_rewards: formatMON(info.unclaimed_rewards),
+    consensus_stake: formatMON(info.consensus_stake),
     consensus_commission: Number(info.consensus_commission) / 100,
-    snapshot_stake: ethers.formatEther(info.snapshot_stake),
+    snapshot_stake: formatMON(info.snapshot_stake),
     snapshot_commission: Number(info.snapshot_commission) / 100,
     auth_address: info.auth_address,
+    // raw values for DB caching (not exposed in API)
+    _raw: {
+      stake_wei: info.stake.toString(),
+      commission_raw: info.commission.toString(),
+      unclaimed_rewards_wei: info.unclaimed_rewards.toString(),
+    },
   };
 }
 
@@ -63,15 +73,11 @@ export async function getDelegatorInfo(valId, delegatorAddress) {
   const contract = getContract();
   const result = await contract.getDelegator.staticCall(valId, delegatorAddress);
   return {
-    stake: ethers.formatEther(result[0]),
-    stake_wei: result[0].toString(),
-    acc_reward_per_token: result[1].toString(),
-    unclaimed_rewards: ethers.formatEther(result[2]),
-    unclaimed_rewards_wei: result[2].toString(),
-    delta_stake: result[3].toString(),
-    next_delta_stake: result[4].toString(),
-    delta_epoch: Number(result[5]),
-    next_delta_epoch: Number(result[6]),
+    stake: formatMON(result[0]),
+    unclaimed_rewards: formatMON(result[2]),
+    // raw BigInts for aggregation in routes
+    _stake_wei: result[0],
+    _unclaimed_rewards_wei: result[2],
   };
 }
 
@@ -106,19 +112,6 @@ export async function getAllDelegators(valId) {
   }
 
   return delegators;
-}
-
-// ---------- Withdrawal Queries ----------
-
-export async function getWithdrawalRequest(valId, delegatorAddress, withdrawId) {
-  const contract = getContract();
-  const result = await contract.getWithdrawalRequest.staticCall(valId, delegatorAddress, withdrawId);
-  return {
-    amount: ethers.formatEther(result[0]),
-    amount_wei: result[0].toString(),
-    acc_reward_per_token: result[1].toString(),
-    withdraw_epoch: Number(result[2]),
-  };
 }
 
 // ---------- Epoch & Proposer ----------
