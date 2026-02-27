@@ -63,7 +63,7 @@ app.get("/monad-api", (req, res) => {
         "GET /monad-api/validator/uptime/:id/history": "Validator round history",
       },
       staking: {
-        "GET /monad-api/staking/epoch": "Current epoch info & proposer",
+        "GET /monad-api/staking/epoch": "Current epoch info",
         "GET /monad-api/staking/pool": "Total staked & bonded tokens",
         "GET /monad-api/staking/validator/:valId": "On-chain validator data (stake, commission, rewards)",
         "GET /monad-api/staking/validator/:valId/delegators": "List all delegators of a validator",
