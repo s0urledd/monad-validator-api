@@ -5,6 +5,7 @@ dotenv.config();
 import express from "express";
 import cors from "cors";
 import validatorRoutes from "./validators.js";
+import stakingRoutes from "./staking-routes.js";
 import { startPeriodicSync } from "./github-sync.js";
 import { startStatusSync } from "./status-sync.js";
 import { getValidatorCount } from "./db.js";
@@ -49,32 +50,46 @@ app.get("/health", (req, res) => {
   });
 });
 
-// API info - /validators endpoint'i gösterme
+// API info
 app.get("/monad-api", (req, res) => {
   res.json({
     name: "Monad Validator API",
-    version: "1.0.0",
+    version: "2.0.0",
     endpoints: {
-      "GET /monad-api/validator/:id": "Get validator by ID (1, 2, 3...)",
-      "GET /monad-api/validator/:address": "Get validator by Secp address",
-      "GET /monad-api/validator/uptime/:id": "Single validator uptime",
-      "GET /monad-api/validator/uptime/:id/history": "Validator round history"
+      validators: {
+        "GET /monad-api/validator/:id": "Get validator by ID (1, 2, 3...)",
+        "GET /monad-api/validator/:address": "Get validator by Secp address",
+        "GET /monad-api/validator/uptime/:id": "Single validator uptime",
+        "GET /monad-api/validator/uptime/:id/history": "Validator round history",
+      },
+      staking: {
+        "GET /monad-api/staking/epoch": "Current epoch info & proposer",
+        "GET /monad-api/staking/pool": "Total staked & bonded tokens",
+        "GET /monad-api/staking/validator/:valId": "On-chain validator data (stake, commission, rewards)",
+        "GET /monad-api/staking/validator/:valId/delegators": "List all delegators of a validator",
+        "GET /monad-api/staking/delegator/:address": "All delegations for an address",
+        "GET /monad-api/staking/delegator/:address/rewards": "Unclaimed rewards across all validators",
+        "GET /monad-api/staking/delegator/:address/validator/:valId": "Specific delegation details",
+      },
     },
     query_params: {
       uptime: {
         window: "Hours window (1-24, default 24)",
-        sort: "Sort by: 'uptime' (desc) or 'id' (asc)"
+        sort: "Sort by: 'uptime' (desc) or 'id' (asc)",
       },
       history: {
-        limit: "Number of rounds (1-50, default 49)"
-      }
-    }
+        limit: "Number of rounds (1-50, default 49)",
+      },
+    },
   });
 });
 
 // Routes - /validators gizli endpoint (sadece sen kullan)
 app.use("/monad-api/validators", validatorRoutes);
 app.use("/monad-api/validator", validatorRoutes);
+
+// Staking & Delegation routes
+app.use("/monad-api/staking", stakingRoutes);
 
 // 404 handler
 app.use((req, res) => {
@@ -97,7 +112,7 @@ app.use((err, req, res, next) => {
 // ---------- Startup ----------
 app.listen(PORT, HOST, () => {
   log("info", `🚀 Monad Validator API running on http://${HOST}:${PORT}`);
-  log("info", `📋 Public endpoints: /monad-api/validator/...`);
+  log("info", `📋 Public endpoints: /monad-api/validator/... & /monad-api/staking/...`);
   log("info", `🔒 Hidden endpoint: /monad-api/validators (list all)`);
   
   startPeriodicSync();
