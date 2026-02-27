@@ -80,11 +80,11 @@ router.get("/validator/:valId", async (req, res) => {
     const validator = getValidatorById(valId);
     const onChain = await getValidatorOnChain(valId);
 
-    // Query auth_address's self-bond delegation rewards
-    let selfBond = null;
+    // Query auth_address's delegation rewards
+    let authDelegation = null;
     if (onChain.auth_address && onChain.auth_address !== ethers.ZeroAddress) {
       try {
-        selfBond = await getDelegatorInfo(valId, onChain.auth_address);
+        authDelegation = await getDelegatorInfo(valId, onChain.auth_address);
       } catch {
         // auth_address may not be a delegator
       }
@@ -99,11 +99,8 @@ router.get("/validator/:valId", async (req, res) => {
         status: validator?.status || "unknown",
         stake: onChain.stake,
         commission: onChain.commission,
-        commission_rewards: onChain.unclaimed_rewards,
+        unclaimed_rewards: authDelegation ? authDelegation.unclaimed_rewards : 0,
         auth_address: onChain.auth_address,
-        self_bond: selfBond ? selfBond.stake : 0,
-        self_bond_rewards: selfBond ? selfBond.unclaimed_rewards : 0,
-        total_unclaimed: parseFloat((onChain.unclaimed_rewards + (selfBond ? selfBond.unclaimed_rewards : 0)).toFixed(2)),
       },
     });
   } catch (err) {
