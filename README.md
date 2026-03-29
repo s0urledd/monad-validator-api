@@ -1,5 +1,11 @@
 # Monad Validator API
 
+[![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![Express](https://img.shields.io/badge/Express-4.x-000000?logo=express&logoColor=white)](https://expressjs.com/)
+[![SQLite](https://img.shields.io/badge/SQLite-WAL-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+[![Monad](https://img.shields.io/badge/Monad-Blockchain-836EF9)](https://monad.xyz/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Validator metadata, uptime tracking, and on-chain staking data API for Monad.
 
 ## Features
@@ -14,61 +20,50 @@ Validator metadata, uptime tracking, and on-chain staking data API for Monad.
 
 ## Architecture
 
-```
-┌──────────────────┐      ┌──────────────────┐
-│   GitHub Repo    │─────▶│  github-sync.js  │───┐
-│   (metadata)     │      │  (hourly)        │   │
-└──────────────────┘      └──────────────────┘   │
-                                                  ▼
-┌──────────────────┐      ┌──────────────────┐  ┌──────────────┐
-│  monad-ledger-   │─────▶│    logger.js     │─▶│    SQLite    │
-│  tail (logs)     │      │  (real-time)     │  │   monad.db   │
-└──────────────────┘      └──────────────────┘  └──────┬───────┘
-                                                       │
-┌──────────────────┐      ┌──────────────────┐         │
-│     Staking      │─────▶│  status-sync.js  │─────────┤
-│   Precompile     │      │  (epoch watcher) │         │
-└──────────────────┘      └───────┬──────────┘         │
-                                  │ epoch transition   │
-                          ┌───────▼──────────┐         │
-                          │ snapshot-job.js   │─────────┘
-                          │ (uptime indexer)  │         │
-                          └──────────────────┘         │
-                                                       ▼
-                          ┌──────────────────┐  ┌──────────────┐
-                          │    index.js      │◀─│  staking.js  │
-                          │  (Express API)   │  │ (RPC + cache)│
-                          └───────┬──────────┘  └──────────────┘
-                                  │ HTTP
-                           ┌──────┴──────┐
-                           │   Clients   │
-                           └─────────────┘
+```mermaid
+graph TD
+    GH[GitHub Repo<br><i>validator metadata</i>] -->|hourly sync| GS[github-sync.js]
+    ML[monad-ledger-tail<br><i>systemd logs</i>] -->|real-time| LG[logger.js]
+    SP[Staking Precompile<br><i>0x...1000</i>] -->|epoch poll| SS[status-sync.js<br><i>epoch watcher</i>]
+
+    GS -->|upsert| DB[(SQLite<br>monad.db)]
+    LG -->|insert| DB
+    SS -->|update status<br>& staking| DB
+
+    SS -->|epoch transition| SJ[snapshot-job.js<br><i>uptime indexer</i>]
+    SJ -->|aggregate & save| DB
+
+    DB --> IX[index.js<br><i>Express API</i>]
+    ST[staking.js<br><i>RPC + 30s cache</i>] --> IX
+
+    IX -->|HTTP JSON| CL[Clients]
+
+    style DB fill:#003B57,stroke:#005f8a,color:#fff
+    style IX fill:#2d6a2d,stroke:#3a8a3a,color:#fff
+    style SJ fill:#6a3d6a,stroke:#8a5a8a,color:#fff
+    style CL fill:#444,stroke:#666,color:#fff
 ```
 
 ## Data Flow
 
-```
-Monad Node Logs                    Staking Precompile
-      │                                   │
-      ▼                                   ▼
-  logger.js                         status-sync.js
-  (journalctl)                      (epoch watcher)
-      │                                   │
-      ▼                                   │
- uptime_events ◄──────────────────────────┘
- (48h rolling)            epoch transition triggers
-      │                          │
-      │                          ▼
-      │                    snapshot-job.js
-      │                    takeEpochSnapshot()
-      │                          │
-      │                          ▼
-      │                 uptime_epoch_snapshots
-      │                 (permanent, per-epoch)
-      │                          │
-      ▼                          ▼
- 24h live uptime          30d / 90d / all-time
- (API endpoints)          (cumulative queries)
+```mermaid
+graph LR
+    subgraph Real-Time
+        LOGS[Node Logs] --> LG2[logger.js]
+        LG2 --> UE[uptime_events<br><i>48h rolling window</i>]
+    end
+
+    subgraph Epoch Trigger
+        EP[Epoch Transition] --> SJ2[snapshot-job.js]
+        SJ2 -->|aggregate since<br>last snapshot| ES[uptime_epoch_snapshots<br><i>permanent storage</i>]
+    end
+
+    UE -.->|source data| SJ2
+    UE -->|live queries| API1[24h Uptime API]
+    ES -->|cumulative SUM| API2[30d / 90d / All-time]
+
+    style UE fill:#8B4513,stroke:#A0522D,color:#fff
+    style ES fill:#003B57,stroke:#005f8a,color:#fff
 ```
 
 ## Data Sources
@@ -161,7 +156,9 @@ GET /monad-api                                   # API info & endpoint list
 
 ### Example Responses
 
-**`GET /monad-api/staking/pool`**
+<details>
+<summary><b>GET /monad-api/staking/pool</b></summary>
+
 ```json
 {
   "success": true,
@@ -173,8 +170,11 @@ GET /monad-api                                   # API info & endpoint list
   "in_delay_period": false
 }
 ```
+</details>
 
-**`GET /monad-api/staking/validator/41`**
+<details>
+<summary><b>GET /monad-api/staking/validator/41</b></summary>
+
 ```json
 {
   "success": true,
@@ -190,8 +190,11 @@ GET /monad-api                                   # API info & endpoint list
   }
 }
 ```
+</details>
 
-**`GET /monad-api/staking/delegator/0xbf4b...`**
+<details>
+<summary><b>GET /monad-api/staking/delegator/0xbf4b...</b></summary>
+
 ```json
 {
   "success": true,
@@ -210,6 +213,7 @@ GET /monad-api                                   # API info & endpoint list
   ]
 }
 ```
+</details>
 
 ### Query Parameters
 
@@ -271,4 +275,4 @@ journalctl -u monad-uptime-logger -f    # Real-time log parser
 
 ## License
 
-MIT
+This project is licensed under the [MIT License](LICENSE).
