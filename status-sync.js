@@ -4,6 +4,7 @@ dotenv.config();
 
 import { ethers } from "ethers";
 import { getAllValidators, updateAllValidatorStatuses, updateAllValidatorStakingData, upsertValidator, normalizeAddress } from "./db.js";
+import { takeEpochSnapshot } from "./snapshot-job.js";
 
 const MONAD_RPC_URL = process.env.MONAD_RPC_URL || "http://127.0.0.1:8080";
 const SYNC_INTERVAL_MS = Number(process.env.STATUS_SYNC_INTERVAL_MS || 3600000);
@@ -239,6 +240,16 @@ async function checkEpoch() {
     if (epochChanged || boundaryPassed) {
       const reason = epochChanged ? `epoch ${epoch - 1} → ${epoch}` : "boundary block passed";
       log("info", `Epoch watcher: ${reason}, triggering sync...`);
+
+      // Snapshot uptime data for the completed epoch before syncing new state
+      if (epochChanged) {
+        try {
+          takeEpochSnapshot(epoch - 1);
+        } catch (err) {
+          log("error", `Epoch snapshot failed for epoch ${epoch - 1}:`, err.message);
+        }
+      }
+
       if (!_syncing) {
         _syncing = true;
         syncStatuses()
