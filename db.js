@@ -180,7 +180,15 @@ export function getRecentEvents(validatorId, limit = 1) {
 
 export function cleanupOldEvents(retentionHours = 48) {
   const cutoff = Math.floor(Date.now() / 1000) - (retentionHours * 3600);
-  const result = db.prepare("DELETE FROM uptime_events WHERE timestamp < ?").run(cutoff);
+  // Only delete events whose day has already been snapshotted,
+  // so we never lose un-indexed data even if retention is short.
+  const result = db.prepare(`
+    DELETE FROM uptime_events
+    WHERE timestamp < ?
+      AND date(timestamp, 'unixepoch') IN (
+        SELECT DISTINCT date FROM uptime_daily_snapshots
+      )
+  `).run(cutoff);
   return result.changes;
 }
 

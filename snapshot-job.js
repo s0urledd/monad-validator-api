@@ -5,13 +5,14 @@
 // 30d / 90d = SUM of rows WHERE date >= N days ago.
 // Data is stored locally only (no API endpoints for now).
 //
-// IMPORTANT: This job backfills ALL un-snapshotted days from uptime_events
-// to ensure no data is lost even if the server was down for a period.
+// Safety guarantees:
+// - Yesterday is ALWAYS re-snapshotted (not skipped) to catch midnight boundary
+// - Backfill only skips days older than yesterday that are already snapshotted
+// - Today's partial is updated hourly via ON CONFLICT UPDATE
 
 import db, {
   getUptimeStatsForDate,
   saveDailySnapshotsBatch,
-  getSnapshotExists,
 } from "./db.js";
 
 const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();
@@ -28,28 +29,16 @@ function toDateStr(d) {
   return d.toISOString().slice(0, 10);
 }
 
-/**
- * Find all distinct dates in uptime_events that do NOT yet have
- * a snapshot. Excludes today (partial, handled separately).
- */
-function getUnsnapshotedDates() {
-  const todayStr = toDateStr(new Date());
-  const rows = db.prepare(`
-    SELECT DISTINCT date(timestamp, 'unixepoch') as day
-    FROM uptime_events
-    WHERE date(timestamp, 'unixepoch') < ?
-      AND date(timestamp, 'unixepoch') NOT IN (
-        SELECT DISTINCT date FROM uptime_daily_snapshots
-      )
-    ORDER BY day ASC
-  `).all(todayStr);
-  return rows.map(r => r.day);
+function getYesterdayStr() {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - 1);
+  return toDateStr(d);
 }
 
 /**
  * Snapshot a specific date: reads uptime_events for that day,
- * aggregates per validator (finalized + timeout counts),
- * writes one row per validator into uptime_daily_snapshots.
+ * aggregates per validator, writes/updates uptime_daily_snapshots.
+ * Uses ON CONFLICT UPDATE so it's safe to call multiple times.
  */
 export function snapshotDate(dateStr) {
   const rows = getUptimeStatsForDate(dateStr);
@@ -81,29 +70,31 @@ export function snapshotDate(dateStr) {
 }
 
 /**
- * Snapshot today's partial data.
- * Overwrites each time so the latest partial is always available.
+ * Find days in uptime_events that have NO snapshot yet.
+ * Excludes today and yesterday (handled separately with forced re-snapshot).
  */
-export function snapshotToday() {
+function getUnsnapshotedOlderDates() {
   const todayStr = toDateStr(new Date());
-  try {
-    snapshotDate(todayStr);
-  } catch (err) {
-    log("debug", `Today's partial snapshot failed: ${err.message}`);
-  }
+  const yesterdayStr = getYesterdayStr();
+  const rows = db.prepare(`
+    SELECT DISTINCT date(timestamp, 'unixepoch') as day
+    FROM uptime_events
+    WHERE date(timestamp, 'unixepoch') < ?
+      AND date(timestamp, 'unixepoch') != ?
+      AND date(timestamp, 'unixepoch') NOT IN (
+        SELECT DISTINCT date FROM uptime_daily_snapshots
+      )
+    ORDER BY day ASC
+  `).all(yesterdayStr, todayStr);
+  return rows.map(r => r.day);
 }
 
 /**
- * Backfill: snapshot ALL days in uptime_events that are missing
- * from uptime_daily_snapshots. This ensures no data is ever lost,
- * even if the server was down or restarted mid-day.
+ * Backfill older days that are missing snapshots entirely.
  */
 export function backfillMissingDays() {
-  const missing = getUnsnapshotedDates();
-  if (missing.length === 0) {
-    log("debug", "No missing snapshots to backfill");
-    return;
-  }
+  const missing = getUnsnapshotedOlderDates();
+  if (missing.length === 0) return;
 
   log("info", `Backfilling ${missing.length} missing day(s): ${missing.join(", ")}`);
   for (const dateStr of missing) {
@@ -116,24 +107,39 @@ export function backfillMissingDays() {
 }
 
 /**
+ * Main snapshot cycle (runs hourly):
+ * 1. Backfill any older missing days
+ * 2. Always re-snapshot yesterday (catches midnight boundary events)
+ * 3. Update today's partial
+ */
+function runSnapshotCycle() {
+  // 1. Backfill older missing days
+  backfillMissingDays();
+
+  // 2. Always re-snapshot yesterday (ON CONFLICT UPDATE ensures latest data)
+  try {
+    snapshotDate(getYesterdayStr());
+  } catch (err) {
+    log("error", `Yesterday snapshot failed:`, err.message);
+  }
+
+  // 3. Update today's partial
+  try {
+    snapshotDate(toDateStr(new Date()));
+  } catch (err) {
+    log("debug", `Today's partial snapshot failed: ${err.message}`);
+  }
+}
+
+/**
  * Start the daily snapshot scheduler.
- * - On startup: backfill all missing days + snapshot today's partial
- * - Every hour: re-check missing days + update today's partial
- *
- * Runs BEFORE cleanup so no data is lost from uptime_events
- * retention window (48h default).
+ * Runs immediately on startup, then every hour.
  */
 export function startSnapshotJob() {
   log("info", "Daily uptime snapshot job started");
 
-  // Initial run: catch up on anything we missed
-  backfillMissingDays();
-  snapshotToday();
+  runSnapshotCycle();
 
-  // Hourly: check for missing days + update today
   const INTERVAL_MS = 3600000; // 1 hour
-  setInterval(() => {
-    backfillMissingDays();
-    snapshotToday();
-  }, INTERVAL_MS);
+  setInterval(runSnapshotCycle, INTERVAL_MS);
 }
