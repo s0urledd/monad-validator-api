@@ -11,7 +11,7 @@ import {
 } from "./db.js";
 
 const JOURNAL_UNIT = (process.env.JOURNAL_UNIT || "monad-ledger-tail").trim();
-const RETENTION_HOURS = Number(process.env.UPTIME_RETENTION_HOURS || 24);
+const RETENTION_HOURS = Number(process.env.UPTIME_RETENTION_HOURS || 48);
 const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();
 const CLEANUP_INTERVAL_MS = 3600000;
 

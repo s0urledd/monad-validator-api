@@ -40,6 +40,26 @@ db.exec(`
     ON uptime_events(timestamp DESC);
   CREATE INDEX IF NOT EXISTS idx_validators_secp
     ON validators(secp_address);
+
+  CREATE TABLE IF NOT EXISTS uptime_epoch_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    validator_id INTEGER NOT NULL,
+    secp_address TEXT NOT NULL,
+    epoch INTEGER NOT NULL,
+    finalized_count INTEGER NOT NULL DEFAULT 0,
+    timeout_count INTEGER NOT NULL DEFAULT 0,
+    total_events INTEGER NOT NULL DEFAULT 0,
+    uptime_percent REAL NOT NULL DEFAULT 0,
+    snapshot_ts INTEGER DEFAULT (strftime('%s', 'now')),
+    UNIQUE(validator_id, epoch)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_epoch_snapshots_validator
+    ON uptime_epoch_snapshots(validator_id, epoch DESC);
+  CREATE INDEX IF NOT EXISTS idx_epoch_snapshots_epoch
+    ON uptime_epoch_snapshots(epoch DESC);
+  CREATE INDEX IF NOT EXISTS idx_epoch_snapshots_ts
+    ON uptime_epoch_snapshots(snapshot_ts DESC);
 `);
 
 // seq_num column yoksa ekle
@@ -162,7 +182,20 @@ export function getRecentEvents(validatorId, limit = 1) {
 
 export function cleanupOldEvents(retentionHours = 48) {
   const cutoff = Math.floor(Date.now() / 1000) - (retentionHours * 3600);
-  const result = db.prepare("DELETE FROM uptime_events WHERE timestamp < ?").run(cutoff);
+  // Only delete events older than cutoff AND that have been snapshotted.
+  // We check if there's any epoch snapshot with a timestamp after the event,
+  // meaning the event's epoch has been captured.
+  const lastSnapshotTs = db.prepare(
+    "SELECT MAX(snapshot_ts) as ts FROM uptime_epoch_snapshots"
+  ).get()?.ts;
+
+  // If no snapshots exist yet, don't delete anything
+  if (!lastSnapshotTs) return 0;
+
+  const result = db.prepare(`
+    DELETE FROM uptime_events
+    WHERE timestamp < ? AND timestamp < ?
+  `).run(cutoff, lastSnapshotTs);
   return result.changes;
 }
 
@@ -260,6 +293,142 @@ export function getStakingPool() {
     total_validators: rows.length,
     active_validators: activeCount,
   };
+}
+
+// ---------- Epoch Snapshots ----------
+export function saveEpochSnapshotsBatch(snapshots) {
+  const stmt = db.prepare(`
+    INSERT INTO uptime_epoch_snapshots (validator_id, secp_address, epoch, finalized_count, timeout_count, total_events, uptime_percent)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(validator_id, epoch) DO UPDATE SET
+      secp_address = excluded.secp_address,
+      finalized_count = excluded.finalized_count,
+      timeout_count = excluded.timeout_count,
+      total_events = excluded.total_events,
+      uptime_percent = excluded.uptime_percent,
+      snapshot_ts = strftime('%s', 'now')
+  `);
+
+  const insertMany = db.transaction((rows) => {
+    for (const r of rows) {
+      const total = r.finalized + r.timeout;
+      const pct = total > 0 ? (r.finalized / total) * 100 : 0;
+      stmt.run(r.validatorId, r.secpAddress, r.epoch, r.finalized, r.timeout, total, pct);
+    }
+  });
+
+  return insertMany(snapshots);
+}
+
+/**
+ * Get uptime event counts grouped by validator since a given timestamp.
+ * Used to aggregate events for an epoch window.
+ */
+export function getUptimeStatsSince(sinceTs) {
+  return db.prepare(`
+    SELECT
+      ue.validator_id,
+      v.secp_address,
+      ue.event_type,
+      COUNT(*) as count
+    FROM uptime_events ue
+    JOIN validators v ON v.id = ue.validator_id
+    WHERE ue.timestamp >= ?
+    GROUP BY ue.validator_id, ue.event_type
+  `).all(sinceTs);
+}
+
+export function getEpochSnapshotExists(epoch) {
+  const row = db.prepare(
+    "SELECT COUNT(*) as count FROM uptime_epoch_snapshots WHERE epoch = ?"
+  ).get(epoch);
+  return row.count > 0;
+}
+
+export function getLastSnapshotEpoch() {
+  const row = db.prepare(
+    "SELECT MAX(epoch) as last_epoch FROM uptime_epoch_snapshots"
+  ).get();
+  return row ? row.last_epoch : null;
+}
+
+export function getLastSnapshotTimestamp() {
+  const row = db.prepare(
+    "SELECT MAX(snapshot_ts) as last_ts FROM uptime_epoch_snapshots"
+  ).get();
+  return row ? row.last_ts : null;
+}
+
+/**
+ * Get cumulative uptime for a validator over a period.
+ * period: "30d" | "90d" | "all"
+ */
+export function getCumulativeUptime(validatorId, period = "all") {
+  let tsFilter = "";
+  if (period === "30d") {
+    tsFilter = `AND snapshot_ts >= ${Math.floor(Date.now() / 1000) - 30 * 86400}`;
+  } else if (period === "90d") {
+    tsFilter = `AND snapshot_ts >= ${Math.floor(Date.now() / 1000) - 90 * 86400}`;
+  }
+
+  const row = db.prepare(`
+    SELECT
+      validator_id,
+      secp_address,
+      SUM(finalized_count) as finalized,
+      SUM(timeout_count) as timeout,
+      SUM(total_events) as total
+    FROM uptime_epoch_snapshots
+    WHERE validator_id = ? ${tsFilter}
+    GROUP BY validator_id
+  `).get(validatorId);
+
+  if (!row || row.total === 0) {
+    return { validator_id: validatorId, finalized: 0, timeout: 0, total: 0, uptime_percent: 0 };
+  }
+
+  return {
+    validator_id: row.validator_id,
+    secp_address: row.secp_address,
+    finalized: row.finalized,
+    timeout: row.timeout,
+    total: row.total,
+    uptime_percent: parseFloat(((row.finalized / row.total) * 100).toFixed(2)),
+  };
+}
+
+/**
+ * Get cumulative uptime for ALL validators over a period.
+ */
+export function getAllCumulativeUptime(period = "all") {
+  let tsFilter = "";
+  if (period === "30d") {
+    tsFilter = `WHERE snapshot_ts >= ${Math.floor(Date.now() / 1000) - 30 * 86400}`;
+  } else if (period === "90d") {
+    tsFilter = `WHERE snapshot_ts >= ${Math.floor(Date.now() / 1000) - 90 * 86400}`;
+  }
+
+  const rows = db.prepare(`
+    SELECT
+      validator_id,
+      secp_address,
+      SUM(finalized_count) as finalized,
+      SUM(timeout_count) as timeout,
+      SUM(total_events) as total
+    FROM uptime_epoch_snapshots
+    ${tsFilter}
+    GROUP BY validator_id
+    ORDER BY validator_id ASC
+  `).all();
+
+  return rows.map((r) => ({
+    validator_id: r.validator_id,
+    secp_address: r.secp_address,
+    finalized: r.finalized,
+    timeout: r.timeout,
+    total: r.total,
+    uptime_percent: r.total > 0 ? parseFloat(((r.finalized / r.total) * 100).toFixed(2)) : 0,
+  }));
 }
 
 export default db;
