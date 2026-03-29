@@ -6,6 +6,7 @@ Validator metadata, uptime tracking, and on-chain staking data API for Monad.
 
 - **Validator Metadata** — Auto-synced from GitHub (hourly)
 - **Uptime Tracking** — Real-time log analysis (finalized/timeout rounds)
+- **Historical Uptime** — Epoch-based snapshots with 30d / 90d / all-time cumulative views
 - **On-Chain Staking** — Live queries to the staking precompile (`0x...1000`)
 - **Delegation Data** — Per-validator delegator lists, per-address delegation summaries
 - **Epoch Awareness** — Auto-syncs on epoch transitions and boundary blocks
@@ -14,29 +15,60 @@ Validator metadata, uptime tracking, and on-chain staking data API for Monad.
 ## Architecture
 
 ```
-┌─────────────────┐     ┌──────────────────┐
-│  GitHub Repo    │────▶│  github-sync.js  │──┐
-│  (metadata)     │     │  (hourly)        │  │
-└─────────────────┘     └──────────────────┘  │
-                                               ▼
-┌─────────────────┐     ┌──────────────────┐  ┌─────────────┐
-│ monad-ledger-   │────▶│    logger.js     │─▶│   SQLite    │
-│ tail (logs)     │     │  (real-time)     │  │  monad.db   │
-└─────────────────┘     └──────────────────┘  └──────┬──────┘
-                                                      │
-┌─────────────────┐     ┌──────────────────┐          │
-│ Staking         │────▶│  status-sync.js  │──────────┘
-│ Precompile      │     │  (epoch watcher) │          │
-└─────────────────┘     └──────────────────┘          │
-                                                      ▼
-                        ┌──────────────────┐   ┌─────────────┐
-                        │    index.js      │◀──│  staking.js │
-                        │  (Express API)   │   │  (RPC+cache)│
-                        └───────┬──────────┘   └─────────────┘
-                                │ HTTP
-                         ┌──────┴──────┐
-                         │   Clients   │
-                         └─────────────┘
+┌──────────────────┐      ┌──────────────────┐
+│   GitHub Repo    │─────▶│  github-sync.js  │───┐
+│   (metadata)     │      │  (hourly)        │   │
+└──────────────────┘      └──────────────────┘   │
+                                                  ▼
+┌──────────────────┐      ┌──────────────────┐  ┌──────────────┐
+│  monad-ledger-   │─────▶│    logger.js     │─▶│    SQLite    │
+│  tail (logs)     │      │  (real-time)     │  │   monad.db   │
+└──────────────────┘      └──────────────────┘  └──────┬───────┘
+                                                       │
+┌──────────────────┐      ┌──────────────────┐         │
+│     Staking      │─────▶│  status-sync.js  │─────────┤
+│   Precompile     │      │  (epoch watcher) │         │
+└──────────────────┘      └───────┬──────────┘         │
+                                  │ epoch transition   │
+                          ┌───────▼──────────┐         │
+                          │ snapshot-job.js   │─────────┘
+                          │ (uptime indexer)  │         │
+                          └──────────────────┘         │
+                                                       ▼
+                          ┌──────────────────┐  ┌──────────────┐
+                          │    index.js      │◀─│  staking.js  │
+                          │  (Express API)   │  │ (RPC + cache)│
+                          └───────┬──────────┘  └──────────────┘
+                                  │ HTTP
+                           ┌──────┴──────┐
+                           │   Clients   │
+                           └─────────────┘
+```
+
+## Data Flow
+
+```
+Monad Node Logs                    Staking Precompile
+      │                                   │
+      ▼                                   ▼
+  logger.js                         status-sync.js
+  (journalctl)                      (epoch watcher)
+      │                                   │
+      ▼                                   │
+ uptime_events ◄──────────────────────────┘
+ (48h rolling)            epoch transition triggers
+      │                          │
+      │                          ▼
+      │                    snapshot-job.js
+      │                    takeEpochSnapshot()
+      │                          │
+      │                          ▼
+      │                 uptime_epoch_snapshots
+      │                 (permanent, per-epoch)
+      │                          │
+      ▼                          ▼
+ 24h live uptime          30d / 90d / all-time
+ (API endpoints)          (cumulative queries)
 ```
 
 ## Data Sources
@@ -61,10 +93,39 @@ npm start               # start API server
 
 | Process | Command | Description |
 |---------|---------|-------------|
-| API Server | `npm start` | Express HTTP server + status sync + epoch watcher |
+| API Server | `npm start` | Express HTTP server + status sync + epoch watcher + snapshot indexer |
 | Uptime Logger | `npm run logger` | journalctl → SQLite (real-time) |
 | Metadata Sync | Built-in | Runs inside API server (hourly) |
 | Status Sync | Built-in | Runs inside API server (hourly + epoch transitions) |
+| Snapshot Indexer | Built-in | Triggered by epoch watcher on each epoch transition |
+
+## Database Schema
+
+### `validators`
+Validator metadata, on-chain staking data, and status.
+
+### `uptime_events`
+Rolling window (48h default) of raw finalized/timeout events per round.
+Used for live 24h uptime API queries. Cleaned up after snapshotting.
+
+### `uptime_epoch_snapshots`
+Permanent historical record. One row per validator per epoch.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `validator_id` | INTEGER | Validator ID |
+| `secp_address` | TEXT | Validator secp address |
+| `epoch` | INTEGER | Epoch number |
+| `finalized_count` | INTEGER | Finalized rounds in this epoch |
+| `timeout_count` | INTEGER | Missed/timeout rounds in this epoch |
+| `total_events` | INTEGER | Total rounds |
+| `uptime_percent` | REAL | Uptime % for this epoch |
+| `snapshot_ts` | INTEGER | Unix timestamp when snapshot was taken |
+
+Cumulative queries aggregate across epochs:
+- **All-time**: `SUM(*)` across all epoch snapshots
+- **30 days**: `SUM(*)` where `snapshot_ts >= now - 30d`
+- **90 days**: `SUM(*)` where `snapshot_ts >= now - 90d`
 
 ## API Endpoints
 
@@ -175,6 +236,13 @@ GET /monad-api                                   # API info & endpoint list
 
 ## Systemd (Production)
 
+Two separate services share the same SQLite database (WAL mode):
+
+```
+monad-api.service            → node index.js   (API + sync + epoch watcher + snapshots)
+monad-uptime-logger.service  → node logger.js  (journalctl → uptime_events)
+```
+
 See `services.txt` for systemd unit files. Quick setup:
 
 ```bash
@@ -184,13 +252,21 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now monad-api monad-uptime-logger
 ```
 
+Monitor:
+```bash
+journalctl -u monad-api -f              # API + epoch watcher + snapshots
+journalctl -u monad-uptime-logger -f    # Real-time log parser
+```
+
 ## Notes
 
 - All monetary values are returned as **raw numbers** (not formatted strings) for safe client-side parsing
 - **30s in-memory cache** on live RPC calls prevents redundant queries under burst traffic
 - **Epoch watcher** polls every 2 minutes and triggers a full sync on epoch transitions or boundary blocks
+- **Uptime snapshots** are taken at each epoch transition (~5.5h), ensuring no data loss from the rolling event window
+- **Cleanup safety**: events are only deleted after being snapshotted — if no snapshot exists, nothing is deleted
 - `total_validators` from DB (all known), `active_validators` from on-chain consensus set
-- SQLite WAL mode enables concurrent reads/writes
+- SQLite WAL mode enables concurrent reads/writes across both services
 - GitHub sync failures preserve existing data (no data loss)
 
 ## License
