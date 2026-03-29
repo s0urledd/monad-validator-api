@@ -40,6 +40,24 @@ db.exec(`
     ON uptime_events(timestamp DESC);
   CREATE INDEX IF NOT EXISTS idx_validators_secp
     ON validators(secp_address);
+
+  CREATE TABLE IF NOT EXISTS uptime_daily_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    validator_id INTEGER NOT NULL,
+    secp_address TEXT NOT NULL,
+    date TEXT NOT NULL,
+    finalized_count INTEGER NOT NULL DEFAULT 0,
+    timeout_count INTEGER NOT NULL DEFAULT 0,
+    total_events INTEGER NOT NULL DEFAULT 0,
+    uptime_percent REAL NOT NULL DEFAULT 0,
+    created_at INTEGER DEFAULT (strftime('%s', 'now')),
+    UNIQUE(validator_id, date)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_snapshots_validator_date
+    ON uptime_daily_snapshots(validator_id, date DESC);
+  CREATE INDEX IF NOT EXISTS idx_snapshots_date
+    ON uptime_daily_snapshots(date DESC);
 `);
 
 // seq_num column yoksa ekle
@@ -260,6 +278,142 @@ export function getStakingPool() {
     total_validators: rows.length,
     active_validators: activeCount,
   };
+}
+
+// ---------- Daily Snapshots ----------
+export function saveDailySnapshot(validatorId, secpAddress, date, finalized, timeout) {
+  const total = finalized + timeout;
+  const pct = total > 0 ? (finalized / total) * 100 : 0;
+
+  return db.prepare(`
+    INSERT INTO uptime_daily_snapshots (validator_id, secp_address, date, finalized_count, timeout_count, total_events, uptime_percent)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(validator_id, date) DO UPDATE SET
+      secp_address = excluded.secp_address,
+      finalized_count = excluded.finalized_count,
+      timeout_count = excluded.timeout_count,
+      total_events = excluded.total_events,
+      uptime_percent = excluded.uptime_percent,
+      created_at = strftime('%s', 'now')
+  `).run(validatorId, secpAddress, date, finalized, timeout, total, pct);
+}
+
+export function saveDailySnapshotsBatch(snapshots) {
+  const stmt = db.prepare(`
+    INSERT INTO uptime_daily_snapshots (validator_id, secp_address, date, finalized_count, timeout_count, total_events, uptime_percent)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(validator_id, date) DO UPDATE SET
+      secp_address = excluded.secp_address,
+      finalized_count = excluded.finalized_count,
+      timeout_count = excluded.timeout_count,
+      total_events = excluded.total_events,
+      uptime_percent = excluded.uptime_percent,
+      created_at = strftime('%s', 'now')
+  `);
+
+  const insertMany = db.transaction((rows) => {
+    for (const r of rows) {
+      const total = r.finalized + r.timeout;
+      const pct = total > 0 ? (r.finalized / total) * 100 : 0;
+      stmt.run(r.validatorId, r.secpAddress, r.date, r.finalized, r.timeout, total, pct);
+    }
+  });
+
+  return insertMany(snapshots);
+}
+
+export function getUptimeStatsForDate(date) {
+  return db.prepare(`
+    SELECT
+      ue.validator_id,
+      v.secp_address,
+      ue.event_type,
+      COUNT(*) as count
+    FROM uptime_events ue
+    JOIN validators v ON v.id = ue.validator_id
+    WHERE date(ue.timestamp, 'unixepoch') = ?
+    GROUP BY ue.validator_id, ue.event_type
+  `).all(date);
+}
+
+export function getSnapshotExists(date) {
+  const row = db.prepare(
+    "SELECT COUNT(*) as count FROM uptime_daily_snapshots WHERE date = ?"
+  ).get(date);
+  return row.count > 0;
+}
+
+/**
+ * Get cumulative uptime for a validator over a period.
+ * period: "30d" | "90d" | "all"
+ * Returns: { validator_id, secp_address, finalized, timeout, total, uptime_percent }
+ */
+export function getCumulativeUptime(validatorId, period = "all") {
+  let dateFilter = "";
+  if (period === "30d") {
+    dateFilter = `AND date >= date('now', '-30 days')`;
+  } else if (period === "90d") {
+    dateFilter = `AND date >= date('now', '-90 days')`;
+  }
+
+  const row = db.prepare(`
+    SELECT
+      validator_id,
+      secp_address,
+      SUM(finalized_count) as finalized,
+      SUM(timeout_count) as timeout,
+      SUM(total_events) as total
+    FROM uptime_daily_snapshots
+    WHERE validator_id = ? ${dateFilter}
+    GROUP BY validator_id
+  `).get(validatorId);
+
+  if (!row || row.total === 0) {
+    return { validator_id: validatorId, finalized: 0, timeout: 0, total: 0, uptime_percent: 0 };
+  }
+
+  return {
+    validator_id: row.validator_id,
+    secp_address: row.secp_address,
+    finalized: row.finalized,
+    timeout: row.timeout,
+    total: row.total,
+    uptime_percent: parseFloat(((row.finalized / row.total) * 100).toFixed(2)),
+  };
+}
+
+/**
+ * Get cumulative uptime for ALL validators over a period.
+ */
+export function getAllCumulativeUptime(period = "all") {
+  let dateFilter = "";
+  if (period === "30d") {
+    dateFilter = `WHERE date >= date('now', '-30 days')`;
+  } else if (period === "90d") {
+    dateFilter = `WHERE date >= date('now', '-90 days')`;
+  }
+
+  const rows = db.prepare(`
+    SELECT
+      validator_id,
+      secp_address,
+      SUM(finalized_count) as finalized,
+      SUM(timeout_count) as timeout,
+      SUM(total_events) as total
+    FROM uptime_daily_snapshots
+    ${dateFilter}
+    GROUP BY validator_id
+    ORDER BY validator_id ASC
+  `).all();
+
+  return rows.map((r) => ({
+    validator_id: r.validator_id,
+    secp_address: r.secp_address,
+    finalized: r.finalized,
+    timeout: r.timeout,
+    total: r.total,
+    uptime_percent: r.total > 0 ? parseFloat(((r.finalized / r.total) * 100).toFixed(2)) : 0,
+  }));
 }
 
 export default db;

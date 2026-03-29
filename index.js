@@ -8,6 +8,7 @@ import validatorRoutes from "./validators.js";
 import stakingRoutes from "./staking-routes.js";
 import { startPeriodicSync } from "./github-sync.js";
 import { startStatusSync } from "./status-sync.js";
+import { startSnapshotJob } from "./snapshot-job.js";
 import { getValidatorCount } from "./db.js";
 import { rateLimit } from "./rate-limit.js";
 
@@ -116,6 +117,7 @@ app.listen(PORT, HOST, () => {
   
   startPeriodicSync();
   startStatusSync();
+  startSnapshotJob();
 
   log("info", `✅ Server ready!`);
 });
