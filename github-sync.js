@@ -3,7 +3,7 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import fetch from "node-fetch";
-import { upsertValidator, getValidatorCount, normalizeAddress } from "./db.js";
+import { upsertValidator, getValidatorCount, normalizeAddress, getValidatorById } from "./db.js";
 
 const NETWORK = process.env.NETWORK || "testnet";
 const GITHUB_API_URL = `https://api.github.com/repos/monad-developers/validator-info/contents/${NETWORK}`;
@@ -83,9 +83,20 @@ async function syncValidators() {
     
     if (info && info.id) {
       try {
-        // secp alanı BLS key ile aynı olabilir, veya farklı bir Secp address olabilir
-        const secpAddress = normalizeAddress(info.secp || blsKey);
-        
+        // Use explicit secp from GitHub JSON if available.
+        // Never overwrite an existing on-chain secp_address with a BLS key fallback —
+        // that breaks uptime tracking (logger.js matches log author against secp_address).
+        const secpFromGithub = info.secp ? normalizeAddress(info.secp) : null;
+        const existing = getValidatorById(info.id);
+        let secpAddress;
+        if (secpFromGithub) {
+          secpAddress = secpFromGithub;
+        } else if (existing && existing.secp_address) {
+          secpAddress = existing.secp_address;  // preserve on-chain secp
+        } else {
+          secpAddress = normalizeAddress(blsKey);  // last resort for brand new validators
+        }
+
         upsertValidator({
           id: info.id,
           secp_address: secpAddress,

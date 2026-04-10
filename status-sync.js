@@ -3,7 +3,7 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import { ethers } from "ethers";
-import { getAllValidators, updateAllValidatorStatuses, updateAllValidatorStakingData, upsertValidator, normalizeAddress } from "./db.js";
+import { getAllValidators, updateAllValidatorStatuses, updateAllValidatorStakingData, upsertValidator, normalizeAddress, updateValidatorSecp } from "./db.js";
 import { takeEpochSnapshot } from "./snapshot-job.js";
 
 const MONAD_RPC_URL = process.env.MONAD_RPC_URL || "http://127.0.0.1:8080";
@@ -172,6 +172,7 @@ async function syncStatuses() {
   const stakingDataMap = {};
   const batchSize = 10;
 
+  let secpUpdated = 0;
   for (let i = 0; i < validators.length; i += batchSize) {
     const batch = validators.slice(i, i + batchSize);
     const promises = batch.map(async (v) => {
@@ -184,11 +185,22 @@ async function syncStatuses() {
           consensus_stake_wei: info.consensus_stake.toString(),
           snapshot_stake_wei: info.snapshot_stake.toString(),
         };
+        // Keep secp_address in sync with on-chain secp_pubkey.
+        // This fixes cases where github-sync overwrote it with a BLS key fallback.
+        const onChainSecp = normalizeAddress(info.secp_pubkey);
+        if (onChainSecp && onChainSecp.length > 0 && onChainSecp !== v.secp_address) {
+          updateValidatorSecp(v.id, onChainSecp);
+          secpUpdated++;
+          log("debug", `Updated secp_address for validator #${v.id}`);
+        }
       } catch (err) {
         log("debug", `Failed to fetch staking data for validator #${v.id}: ${err.message}`);
       }
     });
     await Promise.all(promises);
+  }
+  if (secpUpdated > 0) {
+    log("info", `Fixed secp_address for ${secpUpdated} validators from on-chain data`);
   }
 
   try {
