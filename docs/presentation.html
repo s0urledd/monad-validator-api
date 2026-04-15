@@ -1,0 +1,884 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Monad Validator API — Product Overview</title>
+<style>
+  @page {
+    size: A4 landscape;
+    margin: 0;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    color: #e0e0e0;
+    background: #0a0a0f;
+    line-height: 1.5;
+  }
+
+  .slide {
+    width: 297mm;
+    height: 210mm;
+    padding: 28mm 32mm;
+    page-break-after: always;
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+  }
+
+  .slide:last-child { page-break-after: avoid; }
+
+  /* Background gradient */
+  .slide::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: linear-gradient(135deg, #0a0a1a 0%, #0f0f2a 40%, #1a0a2a 100%);
+    z-index: -2;
+  }
+
+  /* Accent glow */
+  .slide::after {
+    content: '';
+    position: absolute;
+    top: -40%; right: -20%;
+    width: 600px; height: 600px;
+    background: radial-gradient(circle, rgba(131,110,249,0.08) 0%, transparent 70%);
+    z-index: -1;
+  }
+
+  /* Footer on every slide */
+  .slide-footer {
+    position: absolute;
+    bottom: 8mm;
+    left: 32mm;
+    right: 32mm;
+    display: flex;
+    justify-content: space-between;
+    font-size: 9px;
+    color: #555;
+    border-top: 1px solid #1a1a2e;
+    padding-top: 4mm;
+  }
+
+  /* ===== SLIDE 1: Title ===== */
+  .title-slide {
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+  }
+
+  .title-badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #836EF9, #6C5CE7);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    padding: 5px 18px;
+    border-radius: 20px;
+    margin-bottom: 16px;
+  }
+
+  .title-main {
+    font-size: 42px;
+    font-weight: 800;
+    color: #fff;
+    letter-spacing: -0.5px;
+    margin-bottom: 8px;
+  }
+
+  .title-sub {
+    font-size: 18px;
+    color: #8888aa;
+    font-weight: 400;
+    margin-bottom: 32px;
+  }
+
+  .title-tags {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+
+  .title-tag {
+    background: rgba(131,110,249,0.12);
+    border: 1px solid rgba(131,110,249,0.25);
+    color: #a99bff;
+    font-size: 11px;
+    padding: 4px 14px;
+    border-radius: 14px;
+  }
+
+  /* ===== Common ===== */
+  h2 {
+    font-size: 26px;
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 6px;
+  }
+
+  h2 .accent { color: #836EF9; }
+
+  .subtitle {
+    font-size: 13px;
+    color: #666;
+    margin-bottom: 20px;
+  }
+
+  h3 {
+    font-size: 15px;
+    font-weight: 600;
+    color: #c0c0d0;
+    margin-bottom: 8px;
+    margin-top: 14px;
+  }
+
+  p, li { font-size: 12px; color: #b0b0c0; }
+  li { margin-bottom: 4px; }
+  ul { padding-left: 16px; }
+  a { color: #836EF9; text-decoration: none; }
+
+  /* Cards grid */
+  .cards {
+    display: grid;
+    gap: 12px;
+    flex: 1;
+  }
+  .cards-2 { grid-template-columns: 1fr 1fr; }
+  .cards-3 { grid-template-columns: 1fr 1fr 1fr; }
+  .cards-4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
+
+  .card {
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 10px;
+    padding: 16px;
+  }
+
+  .card-icon {
+    font-size: 22px;
+    margin-bottom: 8px;
+    display: block;
+  }
+
+  .card h3 {
+    margin-top: 0;
+    font-size: 14px;
+    color: #fff;
+  }
+
+  .card p {
+    font-size: 11px;
+    color: #888;
+    line-height: 1.5;
+  }
+
+  /* Stat box */
+  .stat-val {
+    font-size: 28px;
+    font-weight: 800;
+    color: #836EF9;
+    line-height: 1.1;
+  }
+
+  .stat-label {
+    font-size: 10px;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  /* Architecture diagram */
+  .arch-diagram {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .arch-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .arch-box {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 8px;
+    padding: 10px 16px;
+    text-align: center;
+    min-width: 130px;
+  }
+
+  .arch-box.source {
+    border-color: rgba(131,110,249,0.3);
+    background: rgba(131,110,249,0.06);
+  }
+
+  .arch-box.process {
+    border-color: rgba(46,204,113,0.3);
+    background: rgba(46,204,113,0.06);
+  }
+
+  .arch-box.storage {
+    border-color: rgba(52,152,219,0.3);
+    background: rgba(52,152,219,0.06);
+  }
+
+  .arch-box.api {
+    border-color: rgba(241,196,15,0.3);
+    background: rgba(241,196,15,0.06);
+  }
+
+  .arch-box .box-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: #fff;
+    display: block;
+  }
+
+  .arch-box .box-desc {
+    font-size: 9px;
+    color: #888;
+    display: block;
+  }
+
+  .arch-arrow {
+    color: #444;
+    font-size: 16px;
+  }
+
+  .arch-arrow-down {
+    color: #444;
+    font-size: 14px;
+    text-align: center;
+  }
+
+  /* Table */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+  }
+
+  th {
+    text-align: left;
+    color: #836EF9;
+    font-weight: 600;
+    padding: 8px 10px;
+    border-bottom: 1px solid rgba(131,110,249,0.2);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  td {
+    padding: 7px 10px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    color: #b0b0c0;
+  }
+
+  tr:last-child td { border-bottom: none; }
+
+  code {
+    background: rgba(131,110,249,0.1);
+    color: #a99bff;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  }
+
+  /* Reference cards */
+  .ref-card {
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 10px;
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .ref-card .ref-name {
+    font-size: 15px;
+    font-weight: 700;
+    color: #fff;
+  }
+
+  .ref-card .ref-type {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 600;
+  }
+
+  .ref-type.explorer { color: #836EF9; }
+  .ref-type.tool { color: #2ecc71; }
+
+  .ref-card .ref-url {
+    font-size: 10px;
+    color: #666;
+    word-break: break-all;
+  }
+
+  .ref-card .ref-desc {
+    font-size: 11px;
+    color: #999;
+    line-height: 1.5;
+  }
+
+  .ref-card .ref-features {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 4px;
+  }
+
+  .ref-feature {
+    font-size: 9px;
+    background: rgba(131,110,249,0.1);
+    border: 1px solid rgba(131,110,249,0.15);
+    color: #a99bff;
+    padding: 2px 8px;
+    border-radius: 10px;
+  }
+
+  .highlight-box {
+    background: linear-gradient(135deg, rgba(131,110,249,0.08), rgba(108,92,231,0.04));
+    border: 1px solid rgba(131,110,249,0.2);
+    border-radius: 10px;
+    padding: 14px 18px;
+    margin-top: 10px;
+  }
+
+  .highlight-box p {
+    font-size: 12px;
+    color: #c0b8ff;
+  }
+
+  /* Flow diagram */
+  .flow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .flow-step {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 8px;
+    padding: 8px 14px;
+    text-align: center;
+  }
+
+  .flow-step .step-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: #fff;
+    display: block;
+  }
+
+  .flow-step .step-desc {
+    font-size: 9px;
+    color: #888;
+    display: block;
+  }
+
+  .flow-arrow {
+    color: #836EF9;
+    font-size: 16px;
+  }
+</style>
+</head>
+<body>
+
+<!-- ==================== SLIDE 1: Title ==================== -->
+<div class="slide title-slide">
+  <div class="title-badge">Product Overview</div>
+  <div class="title-main">Monad Validator API</div>
+  <div class="title-sub">Real-time validator metadata, uptime tracking & on-chain staking data</div>
+  <div class="title-tags">
+    <span class="title-tag">Node.js + Express</span>
+    <span class="title-tag">SQLite WAL</span>
+    <span class="title-tag">Epoch-Based Indexing</span>
+    <span class="title-tag">Live RPC</span>
+    <span class="title-tag">REST API</span>
+  </div>
+  <div class="slide-footer">
+    <span>Huginn &mdash; Monad Validator API</span>
+    <span>2026</span>
+  </div>
+</div>
+
+<!-- ==================== SLIDE 2: Features ==================== -->
+<div class="slide">
+  <h2>Core <span class="accent">Features</span></h2>
+  <div class="subtitle">Everything needed to monitor and interact with Monad validators</div>
+
+  <div class="cards cards-3" style="flex:1;">
+    <div class="card">
+      <span class="card-icon">&#9776;</span>
+      <h3>Validator Metadata</h3>
+      <p>Auto-synced from GitHub hourly. Names, logos, websites, social links for all validators.</p>
+    </div>
+    <div class="card">
+      <span class="card-icon">&#9201;</span>
+      <h3>Real-Time Uptime</h3>
+      <p>Live log analysis from journalctl. Tracks finalized blocks and timeout events per round, per validator.</p>
+    </div>
+    <div class="card">
+      <span class="card-icon">&#128200;</span>
+      <h3>Historical Uptime</h3>
+      <p>Epoch-based snapshots with cumulative views: 30-day, 90-day, and all-time uptime percentages.</p>
+    </div>
+    <div class="card">
+      <span class="card-icon">&#9878;</span>
+      <h3>On-Chain Staking</h3>
+      <p>Live queries to the staking precompile. Stake amounts, commission rates, unclaimed rewards.</p>
+    </div>
+    <div class="card">
+      <span class="card-icon">&#128101;</span>
+      <h3>Delegation Data</h3>
+      <p>Per-validator delegator lists and per-address delegation summaries with reward tracking.</p>
+    </div>
+    <div class="card">
+      <span class="card-icon">&#9881;</span>
+      <h3>Epoch Awareness</h3>
+      <p>Polls every 2 minutes. Detects epoch transitions and boundary blocks, triggers full sync automatically.</p>
+    </div>
+  </div>
+
+  <div class="slide-footer">
+    <span>Huginn &mdash; Monad Validator API</span>
+    <span>Features</span>
+  </div>
+</div>
+
+<!-- ==================== SLIDE 3: Architecture ==================== -->
+<div class="slide">
+  <h2>System <span class="accent">Architecture</span></h2>
+  <div class="subtitle">Two systemd services sharing a single SQLite database (WAL mode)</div>
+
+  <div class="arch-diagram">
+    <!-- Row 1: Data Sources -->
+    <div style="text-align:center;margin-bottom:2px;">
+      <span style="font-size:9px;color:#666;text-transform:uppercase;letter-spacing:2px;">Data Sources</span>
+    </div>
+    <div class="arch-row">
+      <div class="arch-box source">
+        <span class="box-title">GitHub Repo</span>
+        <span class="box-desc">Validator metadata</span>
+      </div>
+      <div class="arch-box source">
+        <span class="box-title">monad-ledger-tail</span>
+        <span class="box-desc">Systemd journal logs</span>
+      </div>
+      <div class="arch-box source">
+        <span class="box-title">Staking Precompile</span>
+        <span class="box-desc">0x...1000 (on-chain)</span>
+      </div>
+    </div>
+
+    <div class="arch-arrow-down">&#9660; &#9660; &#9660;</div>
+
+    <!-- Row 2: Processors -->
+    <div style="text-align:center;margin-bottom:2px;">
+      <span style="font-size:9px;color:#666;text-transform:uppercase;letter-spacing:2px;">Processing Layer</span>
+    </div>
+    <div class="arch-row">
+      <div class="arch-box process">
+        <span class="box-title">github-sync.js</span>
+        <span class="box-desc">Hourly metadata sync</span>
+      </div>
+      <div class="arch-box process">
+        <span class="box-title">logger.js</span>
+        <span class="box-desc">Real-time log parser</span>
+      </div>
+      <div class="arch-box process">
+        <span class="box-title">status-sync.js</span>
+        <span class="box-desc">Epoch watcher + sync</span>
+      </div>
+      <div class="arch-box process" style="border-color:rgba(155,89,182,0.3);background:rgba(155,89,182,0.06);">
+        <span class="box-title">snapshot-job.js</span>
+        <span class="box-desc">Epoch uptime indexer</span>
+      </div>
+    </div>
+
+    <div class="arch-arrow-down">&#9660; &#9660; &#9660; &#9660;</div>
+
+    <!-- Row 3: Storage -->
+    <div class="arch-row">
+      <div class="arch-box storage" style="min-width:300px;">
+        <span class="box-title">SQLite &mdash; monad.db (WAL mode)</span>
+        <span class="box-desc">validators &bull; uptime_events (48h) &bull; uptime_epoch_snapshots (permanent)</span>
+      </div>
+    </div>
+
+    <div class="arch-arrow-down">&#9660;</div>
+
+    <!-- Row 4: API -->
+    <div class="arch-row">
+      <div class="arch-box api">
+        <span class="box-title">index.js &mdash; Express API</span>
+        <span class="box-desc">REST endpoints + staking.js (RPC with 30s cache)</span>
+      </div>
+    </div>
+
+    <div class="arch-arrow-down">&#9660; HTTP JSON</div>
+
+    <div class="arch-row">
+      <div class="arch-box" style="border-color:rgba(255,255,255,0.15);">
+        <span class="box-title">Clients &amp; Integrations</span>
+        <span class="box-desc">Explorers, monitors, dashboards</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="slide-footer">
+    <span>Huginn &mdash; Monad Validator API</span>
+    <span>Architecture</span>
+  </div>
+</div>
+
+<!-- ==================== SLIDE 4: Uptime Indexing ==================== -->
+<div class="slide">
+  <h2>Epoch-Based <span class="accent">Uptime Indexing</span></h2>
+  <div class="subtitle">Historical uptime tracking with zero data loss guarantees</div>
+
+  <div class="cards cards-2" style="margin-bottom:14px;">
+    <div class="card">
+      <h3>Real-Time Layer</h3>
+      <p style="margin-bottom:8px;">Validator node logs are parsed in real-time via journalctl. Every finalized block and timeout event is captured per round, per validator.</p>
+      <table>
+        <tr><td><code>uptime_events</code></td><td>48-hour rolling window</td></tr>
+        <tr><td>Insert rate</td><td>~1 second batch flush</td></tr>
+        <tr><td>Deduplication</td><td>UNIQUE(validator_id, round)</td></tr>
+        <tr><td>Used by</td><td>24h live uptime API</td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <h3>Historical Layer</h3>
+      <p style="margin-bottom:8px;">At every epoch transition (~5.5h), all events since the last snapshot are aggregated and permanently stored per validator.</p>
+      <table>
+        <tr><td><code>uptime_epoch_snapshots</code></td><td>Permanent storage</td></tr>
+        <tr><td>Trigger</td><td>Epoch transition event</td></tr>
+        <tr><td>Granularity</td><td>Per epoch, per validator</td></tr>
+        <tr><td>Queries</td><td>30d / 90d / all-time SUM</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div style="text-align:center;margin-bottom:10px;">
+    <span style="font-size:10px;color:#666;text-transform:uppercase;letter-spacing:2px;">Data Flow</span>
+  </div>
+
+  <div class="flow">
+    <div class="flow-step">
+      <span class="step-title">Node Logs</span>
+      <span class="step-desc">finalized / timeout</span>
+    </div>
+    <span class="flow-arrow">&#10132;</span>
+    <div class="flow-step">
+      <span class="step-title">logger.js</span>
+      <span class="step-desc">parse + batch</span>
+    </div>
+    <span class="flow-arrow">&#10132;</span>
+    <div class="flow-step">
+      <span class="step-title">uptime_events</span>
+      <span class="step-desc">48h rolling</span>
+    </div>
+    <span class="flow-arrow">&#10132;</span>
+    <div class="flow-step" style="border-color:rgba(155,89,182,0.3);">
+      <span class="step-title">Epoch Trigger</span>
+      <span class="step-desc">snapshot-job.js</span>
+    </div>
+    <span class="flow-arrow">&#10132;</span>
+    <div class="flow-step" style="border-color:rgba(52,152,219,0.3);">
+      <span class="step-title">epoch_snapshots</span>
+      <span class="step-desc">permanent</span>
+    </div>
+    <span class="flow-arrow">&#10132;</span>
+    <div class="flow-step" style="border-color:rgba(241,196,15,0.3);">
+      <span class="step-title">30d / 90d / All</span>
+      <span class="step-desc">cumulative SUM</span>
+    </div>
+  </div>
+
+  <div class="highlight-box" style="margin-top:14px;">
+    <p><strong>Safety guarantees:</strong> Events are never deleted before being snapshotted. If no snapshot exists, cleanup is blocked. The epoch watcher runs independently, ensuring snapshots are captured even across server restarts.</p>
+  </div>
+
+  <div class="slide-footer">
+    <span>Huginn &mdash; Monad Validator API</span>
+    <span>Uptime Indexing</span>
+  </div>
+</div>
+
+<!-- ==================== SLIDE 5: API Endpoints ==================== -->
+<div class="slide">
+  <h2>API <span class="accent">Endpoints</span></h2>
+  <div class="subtitle">RESTful JSON API &mdash; Base URL: /monad-api</div>
+
+  <div class="cards cards-2" style="flex:1;">
+    <div class="card">
+      <h3>Validator Endpoints</h3>
+      <table>
+        <tr>
+          <th>Method</th>
+          <th>Endpoint</th>
+          <th>Description</th>
+        </tr>
+        <tr>
+          <td><code>GET</code></td>
+          <td><code>/validators</code></td>
+          <td>All validators (metadata + stake)</td>
+        </tr>
+        <tr>
+          <td><code>GET</code></td>
+          <td><code>/validators/:id</code></td>
+          <td>Single by ID or secp address</td>
+        </tr>
+        <tr>
+          <td><code>GET</code></td>
+          <td><code>/validators/uptime</code></td>
+          <td>All uptime (?window, ?sort)</td>
+        </tr>
+        <tr>
+          <td><code>GET</code></td>
+          <td><code>/validators/uptime/:id</code></td>
+          <td>Single validator uptime</td>
+        </tr>
+        <tr>
+          <td><code>GET</code></td>
+          <td><code>/validators/uptime/:id/history</code></td>
+          <td>Round-by-round history</td>
+        </tr>
+        <tr>
+          <td><code>GET</code></td>
+          <td><code>/validators/stats</code></td>
+          <td>Validator count</td>
+        </tr>
+      </table>
+    </div>
+    <div class="card">
+      <h3>Staking Endpoints (Live RPC)</h3>
+      <table>
+        <tr>
+          <th>Method</th>
+          <th>Endpoint</th>
+          <th>Description</th>
+        </tr>
+        <tr>
+          <td><code>GET</code></td>
+          <td><code>/staking/epoch</code></td>
+          <td>Current epoch + delay status</td>
+        </tr>
+        <tr>
+          <td><code>GET</code></td>
+          <td><code>/staking/pool</code></td>
+          <td>Bonded tokens, total staked</td>
+        </tr>
+        <tr>
+          <td><code>GET</code></td>
+          <td><code>/staking/validator/:id</code></td>
+          <td>Stake, commission, rewards</td>
+        </tr>
+        <tr>
+          <td><code>GET</code></td>
+          <td><code>/staking/validator/:id/delegators</code></td>
+          <td>All delegators of validator</td>
+        </tr>
+        <tr>
+          <td><code>GET</code></td>
+          <td><code>/staking/delegator/:addr</code></td>
+          <td>Delegations for address</td>
+        </tr>
+      </table>
+      <div style="margin-top:10px;">
+        <h3>System</h3>
+        <table>
+          <tr>
+            <td><code>GET</code></td>
+            <td><code>/health</code></td>
+            <td>Health check</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="slide-footer">
+    <span>Huginn &mdash; Monad Validator API</span>
+    <span>API Endpoints</span>
+  </div>
+</div>
+
+<!-- ==================== SLIDE 6: Tech Stack ==================== -->
+<div class="slide">
+  <h2>Technical <span class="accent">Overview</span></h2>
+  <div class="subtitle">Lightweight, single-machine deployment with zero external dependencies</div>
+
+  <div class="cards cards-2" style="flex:1;">
+    <div class="card">
+      <h3>Tech Stack</h3>
+      <table>
+        <tr><th>Component</th><th>Technology</th></tr>
+        <tr><td>Runtime</td><td>Node.js 18+ (ESM)</td></tr>
+        <tr><td>HTTP Framework</td><td>Express 4.x</td></tr>
+        <tr><td>Database</td><td>SQLite via better-sqlite3 (WAL)</td></tr>
+        <tr><td>Blockchain</td><td>ethers.js 6.x (RPC + ABI)</td></tr>
+        <tr><td>Log Source</td><td>journalctl (systemd)</td></tr>
+        <tr><td>Process Manager</td><td>systemd (2 services)</td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <h3>Performance Characteristics</h3>
+      <table>
+        <tr><th>Metric</th><th>Value</th></tr>
+        <tr><td>Event insert latency</td><td>~1ms (batch, WAL)</td></tr>
+        <tr><td>API response time</td><td>&lt; 10ms (cached)</td></tr>
+        <tr><td>RPC cache TTL</td><td>30 seconds</td></tr>
+        <tr><td>Memory usage</td><td>~40 MB per service</td></tr>
+        <tr><td>Epoch poll interval</td><td>120 seconds</td></tr>
+        <tr><td>Metadata sync</td><td>Hourly (GitHub)</td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <h3>Database Tables</h3>
+      <table>
+        <tr><th>Table</th><th>Purpose</th><th>Retention</th></tr>
+        <tr><td><code>validators</code></td><td>Metadata + staking</td><td>Permanent</td></tr>
+        <tr><td><code>uptime_events</code></td><td>Live round events</td><td>48 hours</td></tr>
+        <tr><td><code>uptime_epoch_snapshots</code></td><td>Historical uptime</td><td>Permanent</td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <h3>Deployment</h3>
+      <table>
+        <tr><th>Service</th><th>Process</th></tr>
+        <tr><td><code>monad-api</code></td><td>API + sync + snapshots</td></tr>
+        <tr><td><code>monad-uptime-logger</code></td><td>journalctl parser</td></tr>
+      </table>
+      <p style="margin-top:10px;">Both services share the same SQLite database via WAL mode, enabling concurrent reads and writes without locking.</p>
+    </div>
+  </div>
+
+  <div class="slide-footer">
+    <span>Huginn &mdash; Monad Validator API</span>
+    <span>Technical Overview</span>
+  </div>
+</div>
+
+<!-- ==================== SLIDE 7: Ecosystem References ==================== -->
+<div class="slide">
+  <h2>Ecosystem <span class="accent">Integrations</span></h2>
+  <div class="subtitle">Projects and tools that consume Monad Validator API data</div>
+
+  <div class="cards cards-3" style="flex:1;">
+    <div class="ref-card">
+      <span class="ref-type explorer">Explorer</span>
+      <span class="ref-name">Monad Scope</span>
+      <span class="ref-url">monad-scope-piki-nodes.com</span>
+      <span class="ref-desc">Comprehensive Web3 analytics dashboard for the Monad network. Real-time network activity monitoring, block proposer tracking, TPS metrics, and validator performance analytics with an interactive global node map.</span>
+      <div class="ref-features">
+        <span class="ref-feature">Network Dashboard</span>
+        <span class="ref-feature">Validator Analytics</span>
+        <span class="ref-feature">Global Node Map</span>
+        <span class="ref-feature">Staking Portal</span>
+      </div>
+    </div>
+    <div class="ref-card">
+      <span class="ref-type explorer">Explorer</span>
+      <span class="ref-name">Unity Nodes Pulse</span>
+      <span class="ref-url">pulse.unitynodes.com</span>
+      <span class="ref-desc">Professional validator monitoring and management platform by Unity Nodes. Multi-network support with Prometheus + Grafana stack for collecting and visualizing validator metrics across 10+ blockchain networks.</span>
+      <div class="ref-features">
+        <span class="ref-feature">Multi-Network</span>
+        <span class="ref-feature">Prometheus</span>
+        <span class="ref-feature">Grafana</span>
+        <span class="ref-feature">Professional Ops</span>
+      </div>
+    </div>
+    <div class="ref-card">
+      <span class="ref-type tool">Open-Source Tool</span>
+      <span class="ref-name">Micto Monad Monitor</span>
+      <span class="ref-url">github.com/MictoNode/micto-monad-monitor</span>
+      <span class="ref-desc">Remote monitoring solution for Monad validators. Cross-validates status using Huginn API, provides multi-channel alerts (Telegram, Discord, Pushover), web dashboard, and 6-hour detailed uptime reports.</span>
+      <div class="ref-features">
+        <span class="ref-feature">Huginn API Integration</span>
+        <span class="ref-feature">Telegram Alerts</span>
+        <span class="ref-feature">Web Dashboard</span>
+        <span class="ref-feature">Self-Hosted</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="highlight-box">
+    <p><strong>Open data infrastructure:</strong> Monad Validator API serves as a foundational data layer for the Monad ecosystem. Third-party explorers, monitoring tools, and dashboards rely on its endpoints for real-time validator performance data, staking information, and network state.</p>
+  </div>
+
+  <div class="slide-footer">
+    <span>Huginn &mdash; Monad Validator API</span>
+    <span>Ecosystem</span>
+  </div>
+</div>
+
+<!-- ==================== SLIDE 8: Summary ==================== -->
+<div class="slide title-slide">
+  <div class="title-badge">Summary</div>
+  <div class="title-main" style="font-size:36px;">Monad Validator API</div>
+  <div class="title-sub" style="margin-bottom:24px;">Production-grade validator infrastructure for the Monad ecosystem</div>
+
+  <div class="cards cards-4" style="max-width:800px;margin:0 auto 24px;">
+    <div class="card" style="text-align:center;">
+      <span class="stat-val">200+</span>
+      <span class="stat-label">Validators Tracked</span>
+    </div>
+    <div class="card" style="text-align:center;">
+      <span class="stat-val">~5.5h</span>
+      <span class="stat-label">Epoch Snapshots</span>
+    </div>
+    <div class="card" style="text-align:center;">
+      <span class="stat-val">&lt;10ms</span>
+      <span class="stat-label">API Response</span>
+    </div>
+    <div class="card" style="text-align:center;">
+      <span class="stat-val">3</span>
+      <span class="stat-label">Ecosystem Users</span>
+    </div>
+  </div>
+
+  <div class="title-tags" style="margin-bottom:16px;">
+    <span class="title-tag">Real-Time Uptime</span>
+    <span class="title-tag">Historical Indexing</span>
+    <span class="title-tag">On-Chain Staking</span>
+    <span class="title-tag">Delegation Data</span>
+    <span class="title-tag">Epoch Awareness</span>
+    <span class="title-tag">Zero Data Loss</span>
+  </div>
+
+  <div style="text-align:center;">
+    <p style="font-size:13px;color:#666;">github.com/s0urledd/monad-validator-api</p>
+  </div>
+
+  <div class="slide-footer">
+    <span>Huginn &mdash; Monad Validator API</span>
+    <span>2026</span>
+  </div>
+</div>
+
+</body>
+</html>

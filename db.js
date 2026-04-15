@@ -221,6 +221,11 @@ export function getValidatorIdByAddress(address) {
   return row ? row.id : null;
 }
 
+// ---------- Secp Address Update ----------
+export function updateValidatorSecp(id, secpAddress) {
+  return db.prepare("UPDATE validators SET secp_address = ? WHERE id = ?").run(secpAddress, id);
+}
+
 // ---------- Status Updates ----------
 const updateStatusStmt = db.prepare(`
   UPDATE validators SET status = ?, status_updated_at = strftime('%s', 'now')

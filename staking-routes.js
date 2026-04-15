@@ -51,9 +51,16 @@ router.get("/pool", async (req, res) => {
 
     const { consensus_validators, execution_validators, ...poolData } = pool;
 
+    // APR = (blocksPerYear × blockReward) / totalStaked × 100
+    const blocksPerYear = (365.25 * 24 * 3600) / 0.3997;
+    const apr = poolData.total_staked > 0
+      ? parseFloat(((blocksPerYear * 25) / poolData.total_staked * 100).toFixed(2))
+      : 0;
+
     res.json({
       success: true,
       ...poolData,
+      apr,
       total_validators: getValidatorCount(),
       active_validators: consensus_validators,
       ...(epoch && { epoch: epoch.epoch, in_delay_period: epoch.in_delay_period }),
