@@ -51,10 +51,11 @@ router.get("/pool", async (req, res) => {
 
     const { consensus_validators, execution_validators, ...poolData } = pool;
 
-    // APR = (blocksPerYear × blockReward) / totalStaked × 100
+    // APR = (blocksPerYear × blockReward) / bondedTokens × 100
+    // Rewards only go to active consensus validators, so bonded_tokens is the correct denominator.
     const blocksPerYear = (365.25 * 24 * 3600) / 0.3997;
-    const apr = poolData.total_staked > 0
-      ? parseFloat(((blocksPerYear * 25) / poolData.total_staked * 100).toFixed(2))
+    const apr = poolData.bonded_tokens > 0
+      ? parseFloat(((blocksPerYear * 25) / poolData.bonded_tokens * 100).toFixed(2))
       : 0;
 
     res.json({
