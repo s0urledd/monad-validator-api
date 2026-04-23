@@ -60,6 +60,7 @@ app.get("/monad-api", (req, res) => {
       validators: {
         "GET /monad-api/validator/:id": "Get validator by ID (1, 2, 3...)",
         "GET /monad-api/validator/:address": "Get validator by Secp address",
+        "GET /monad-api/validator/uptime": "All validators uptime",
         "GET /monad-api/validator/uptime/:id": "Single validator uptime",
         "GET /monad-api/validator/uptime/:id/history": "Validator round history",
       },
