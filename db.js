@@ -533,6 +533,43 @@ export function getNetworkUptimeByEpoch(period = "all", threshold = 98) {
   `).all(...params);
 }
 
+// VDP evaluates uptime weekly. 1970-01-05 was the first Monday of the Unix
+// epoch, so anchoring there puts bucket boundaries on Monday 00:00 UTC.
+const WEEK_SECONDS = 604800;
+const MONDAY_ANCHOR = 345600;
+
+// Uptime is summed as counts and divided once. Averaging the per-epoch
+// percentages instead would weight a quiet epoch the same as a busy one.
+const WEEKLY_UPTIME_SELECT = `
+  ((snapshot_ts - ${MONDAY_ANCHOR}) / ${WEEK_SECONDS}) as week_index,
+  COUNT(DISTINCT epoch) as epochs,
+  SUM(finalized_count) as finalized,
+  SUM(timeout_count) as timeout,
+  SUM(total_events) as total
+`;
+
+export function getWeeklyUptime(validatorId) {
+  return db.prepare(`
+    SELECT ${WEEKLY_UPTIME_SELECT}
+    FROM uptime_epoch_snapshots
+    WHERE validator_id = ?
+    GROUP BY week_index
+    ORDER BY week_index DESC
+  `).all(validatorId);
+}
+
+export function getAllWeeklyUptime() {
+  return db.prepare(`
+    SELECT validator_id, ${WEEKLY_UPTIME_SELECT}
+    FROM uptime_epoch_snapshots
+    GROUP BY validator_id, week_index
+    ORDER BY validator_id ASC, week_index DESC
+  `).all();
+}
+
+export const VDP_WEEK_SECONDS = WEEK_SECONDS;
+export const VDP_MONDAY_ANCHOR = MONDAY_ANCHOR;
+
 /**
  * Get cumulative uptime for ALL validators over a period.
  */

@@ -65,6 +65,8 @@ app.get("/monad-api", (req, res) => {
         "GET /monad-api/validator/uptime/:id": "Single validator uptime",
         "GET /monad-api/validator/uptime/:id/history": "Validator round history",
         "GET /monad-api/validator/:id/health": "Validator health state for monitoring",
+        "GET /monad-api/validator/:id/vdp": "VDP compliance: weekly uptime & strikes",
+        "GET /monad-api/validators/vdp": "VDP compliance for all validators",
         "GET /monad-api/validator/network/uptime": "Network-wide uptime per epoch",
       },
       staking: {

@@ -11,8 +11,17 @@ import {
   getAllCumulativeUptime,
   getEpochCoverage,
   getNetworkUptimeByEpoch,
-  getValidatorCountsByStatus
+  getValidatorCountsByStatus,
+  getWeeklyUptime,
+  getAllWeeklyUptime
 } from "./db.js";
+import {
+  VDP_RULES,
+  VDP_NOTE,
+  evaluateWeeks,
+  evaluateCompliance,
+  commissionOf
+} from "./vdp.js";
 
 const router = Router();
 
@@ -337,6 +346,100 @@ router.get("/network/uptime", (req, res) => {
         snapshot_ts: e.snapshot_ts,
         snapshot_utc: toISO(e.snapshot_ts)
       }))
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /monad-api/validators/vdp
+// Compliance status for every validator, worst first.
+router.get("/vdp", (req, res) => {
+  try {
+    const byValidator = new Map();
+    for (const row of getAllWeeklyUptime()) {
+      if (!byValidator.has(row.validator_id)) byValidator.set(row.validator_id, []);
+      byValidator.get(row.validator_id).push(row);
+    }
+
+    const validators = getAllValidators();
+    const results = [];
+
+    for (const v of validators) {
+      const rows = byValidator.get(v.id);
+      if (!rows) continue;
+
+      const weeks = evaluateWeeks(rows);
+      const verdict = evaluateCompliance(weeks, commissionOf(v));
+
+      results.push({
+        validator_id: v.id,
+        validator_name: v.name,
+        status: v.status || "unknown",
+        vdp_status: verdict.status,
+        strikes: verdict.uptime.strikes,
+        strikes_remaining: verdict.uptime.strikes_remaining,
+        commission: verdict.commission.current,
+        commission_compliant: verdict.commission.compliant,
+        weeks_in_window: verdict.coverage.weeks_in_window,
+        sufficient_data: verdict.coverage.sufficient,
+        // What we have seen across all recorded history, not just the window.
+        observed_weeks: verdict.observed.complete_weeks,
+        observed_weeks_below_threshold: verdict.observed.weeks_below_threshold,
+        observed_uptime_percent: verdict.observed.uptime_percent,
+        observed_since_utc: verdict.observed.since_utc
+      });
+    }
+
+    // Surface problems first: breaches, then at risk, then by strike count.
+    const rank = { breach: 0, at_risk: 1, insufficient_data: 2, compliant: 3 };
+    results.sort(
+      (a, b) => rank[a.vdp_status] - rank[b.vdp_status] || b.strikes - a.strikes
+    );
+
+    const summary = { breach: 0, at_risk: 0, insufficient_data: 0, compliant: 0 };
+    for (const r of results) summary[r.vdp_status]++;
+
+    res.json({
+      success: true,
+      rules: VDP_RULES,
+      note: VDP_NOTE,
+      summary,
+      count: results.length,
+      validators: results
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /monad-api/validators/:idOrAddress/vdp
+router.get("/:idOrAddress/vdp", (req, res) => {
+  try {
+    const { idOrAddress } = req.params;
+    const validator = resolveValidator(idOrAddress);
+    if (!validator) {
+      return res.status(404).json({
+        success: false,
+        error: "Validator not found",
+        hint: "Use validator ID (e.g., 1) or Secp address (0x...)"
+      });
+    }
+
+    const weeks = evaluateWeeks(getWeeklyUptime(validator.id));
+    const verdict = evaluateCompliance(weeks, commissionOf(validator));
+
+    res.json({
+      success: true,
+      rules: VDP_RULES,
+      note: VDP_NOTE,
+      vdp: {
+        validator_id: validator.id,
+        validator_name: validator.name,
+        status: validator.status || "unknown",
+        ...verdict,
+        weeks
+      }
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
