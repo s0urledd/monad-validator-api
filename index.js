@@ -85,7 +85,8 @@ app.get("/monad-api/openapi.json", (req, res) => {
   res.json(openapi);
 });
 
-// Documentation site
+// Documentation site, also served from the root below once the API routes
+// have had their chance to match.
 app.use("/monad-api/docs", express.static(path.join(__dirname, "public")));
 
 // API info, generated from the spec so it cannot drift from the routes
@@ -105,6 +106,10 @@ app.use("/monad-api/validator", validatorRoutes);
 
 // Staking & Delegation routes (rate limited + 60s timeout for heavy RPC calls)
 app.use("/monad-api/staking", rateLimit({ windowMs: 60_000, max: 60, timeoutMs: 60_000 }), stakingRoutes);
+
+// Landing page at the root. Mounted after the API routes so it can only ever
+// serve paths they did not claim.
+app.use("/", express.static(path.join(__dirname, "public")));
 
 // 404 handler
 app.use((req, res) => {

@@ -10,6 +10,7 @@
   },
   "servers": [
     { "url": "https://validator-api.huginn.tech", "description": "Mainnet" },
+    { "url": "https://validator-api-testnet.huginn.tech", "description": "Testnet" },
     { "url": "http://localhost:3000", "description": "Local" }
   ],
   "tags": [

@@ -39,6 +39,11 @@ nav .wrap{display:flex;align-items:center;gap:28px;height:60px}
 }
 .nav-links{display:flex;gap:22px;margin-left:auto;font-size:14px;color:var(--muted)}
 .nav-links a:hover{color:var(--fg)}
+.net{display:flex;gap:2px;padding:3px;border-radius:99px;background:var(--card);
+  border:1px solid var(--border)}
+.net a{font-size:12px;padding:4px 12px;border-radius:99px;color:var(--muted)}
+.net a:hover{color:var(--fg)}
+.net a.on{background:var(--primary-2);color:#fff}
 .pill{
   display:inline-flex;align-items:center;gap:7px;font-size:12px;
   padding:5px 11px;border-radius:99px;border:1px solid var(--border);
@@ -193,6 +198,10 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
       <a href="#reference">Reference</a>
       <a href="/monad-api/openapi.json">OpenAPI</a>
     </div>
+    <div class="net" id="net" hidden>
+      <a href="https://validator-api.huginn.tech/" data-net="mainnet">Mainnet</a>
+      <a href="https://validator-api-testnet.huginn.tech/" data-net="testnet">Testnet</a>
+    </div>
     <span class="pill"><span class="dot" id="live-dot"></span><span id="live-label">checking</span></span>
   </div>
 </nav>
@@ -269,6 +278,19 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 
 <script>
 const ORIGIN = location.origin;
+
+/* Mainnet and testnet are separate deployments on separate hosts, so the
+   switcher is two links, with the one matching this host marked active. It
+   stays hidden anywhere else, including localhost. */
+(() => {
+  const net = location.hostname.includes('testnet') ? 'testnet'
+            : location.hostname.startsWith('validator-api.') ? 'mainnet'
+            : null;
+  if (!net) return;
+  const box = document.getElementById('net');
+  box.hidden = false;
+  box.querySelector(`[data-net="${net}"]`).classList.add('on');
+})();
 
 /* ---------------- syntax highlighting ---------------- */
 const esc = s => s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
