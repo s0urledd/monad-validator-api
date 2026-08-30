@@ -8,6 +8,7 @@ import validatorRoutes from "./validators.js";
 import stakingRoutes from "./staking-routes.js";
 import { startPeriodicSync } from "./github-sync.js";
 import { startStatusSync } from "./status-sync.js";
+import { startEventIndexer } from "./event-indexer.js";
 import { getValidatorCount } from "./db.js";
 import { rateLimit } from "./rate-limit.js";
 
@@ -71,6 +72,9 @@ app.get("/monad-api", (req, res) => {
         "GET /monad-api/staking/pool": "Total staked, bonded tokens & APR",
         "GET /monad-api/staking/validator-set": "Active set + who enters/leaves next epoch",
         "GET /monad-api/staking/proposer": "Current block proposer",
+        "GET /monad-api/staking/events": "Indexed staking events (?type= &address= &limit=)",
+        "GET /monad-api/staking/validator/:valId/events": "Staking events for one validator",
+        "GET /monad-api/staking/validator/:valId/rewards": "Block rewards per epoch",
         "GET /monad-api/staking/validator/:valId": "On-chain validator data (stake, commission, rewards)",
         "GET /monad-api/staking/validator/:valId/delegators": "List all delegators of a validator",
         "GET /monad-api/staking/delegator/:address": "All delegations & rewards for an address",
@@ -122,6 +126,7 @@ app.listen(PORT, HOST, () => {
   
   startPeriodicSync();
   startStatusSync();
+  startEventIndexer();
 
   log("info", `✅ Server ready!`);
 });

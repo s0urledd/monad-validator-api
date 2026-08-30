@@ -9,6 +9,7 @@
     "logger": "node logger.js",
     "sync": "node github-sync.js",
     "status-sync": "node status-sync.js",
+    "index-events": "node event-indexer.js",
     "dev": "node --watch index.js"
   },
   "dependencies": {

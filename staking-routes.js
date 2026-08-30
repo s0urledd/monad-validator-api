@@ -11,7 +11,14 @@ import {
   getValidatorSets,
   getProposer,
 } from "./staking.js";
-import { getValidatorById, getValidatorCount, getMeasuredBlockTime } from "./db.js";
+import {
+  getValidatorById,
+  getValidatorCount,
+  getMeasuredBlockTime,
+  getStakingEvents,
+  getValidatorEpochRewards,
+  getIndexerStats,
+} from "./db.js";
 
 const router = Router();
 
@@ -95,6 +102,141 @@ router.get("/pool", async (req, res) => {
       total_validators: getValidatorCount(),
       active_validators: consensus_validators,
       ...(epoch && { epoch: epoch.epoch, in_delay_period: epoch.in_delay_period }),
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ---------- Events ----------
+
+const EVENT_TYPES = [
+  "Delegate",
+  "Undelegate",
+  "Withdraw",
+  "ClaimRewards",
+  "CommissionChanged",
+  "ValidatorCreated",
+  "ValidatorStatusChanged",
+  "EpochChanged",
+];
+
+function formatEvent(e) {
+  let extra = null;
+  try {
+    extra = e.extra ? JSON.parse(e.extra) : null;
+  } catch {
+    // keep null on malformed extra rather than failing the whole response
+  }
+
+  return {
+    block_number: e.block_number,
+    tx_hash: e.tx_hash,
+    event_type: e.event_type,
+    validator_id: e.validator_id,
+    address: e.address,
+    amount: e.amount_wei ? toMON(e.amount_wei) : null,
+    epoch: e.epoch,
+    timestamp: e.block_ts,
+    utc: e.block_ts ? new Date(e.block_ts * 1000).toISOString() : null,
+    ...(extra && { details: extra }),
+  };
+}
+
+// GET /monad-api/staking/events
+router.get("/events", (req, res) => {
+  try {
+    const eventType = req.query.type;
+    if (eventType && !EVENT_TYPES.includes(eventType)) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid event type",
+        hint: `Use one of: ${EVENT_TYPES.join(", ")}`,
+      });
+    }
+
+    const limit = Number(req.query.limit) || 50;
+    const events = getStakingEvents({
+      eventType,
+      address: req.query.address,
+      limit,
+    });
+
+    res.json({
+      success: true,
+      indexer: getIndexerStats(),
+      count: events.length,
+      events: events.map(formatEvent),
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /monad-api/staking/validator/:valId/events
+router.get("/validator/:valId/events", (req, res) => {
+  try {
+    const valId = parseInt(req.params.valId);
+    if (isNaN(valId) || valId <= 0) {
+      return res.status(400).json({ success: false, error: "Invalid validator ID" });
+    }
+
+    const eventType = req.query.type;
+    if (eventType && !EVENT_TYPES.includes(eventType)) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid event type",
+        hint: `Use one of: ${EVENT_TYPES.join(", ")}`,
+      });
+    }
+
+    const events = getStakingEvents({
+      validatorId: valId,
+      eventType,
+      limit: Number(req.query.limit) || 50,
+    });
+
+    res.json({
+      success: true,
+      validator_id: valId,
+      count: events.length,
+      events: events.map(formatEvent),
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /monad-api/staking/validator/:valId/rewards
+router.get("/validator/:valId/rewards", (req, res) => {
+  try {
+    const valId = parseInt(req.params.valId);
+    if (isNaN(valId) || valId <= 0) {
+      return res.status(400).json({ success: false, error: "Invalid validator ID" });
+    }
+
+    const rows = getValidatorEpochRewards(valId, Number(req.query.limit) || 100);
+
+    let totalWei = 0n;
+    let blocks = 0;
+    for (const r of rows) {
+      totalWei += BigInt(r.reward_wei);
+      blocks += r.event_count;
+    }
+
+    res.json({
+      success: true,
+      validator_id: valId,
+      epochs_covered: rows.length,
+      total_rewards: toMON(totalWei),
+      blocks_proposed: blocks,
+      epochs: rows.map((r) => ({
+        epoch: r.epoch,
+        rewards: toMON(r.reward_wei),
+        blocks_proposed: r.event_count,
+        first_block: r.first_block,
+        last_block: r.last_block,
+      })),
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });

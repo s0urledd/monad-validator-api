@@ -60,6 +60,54 @@ db.exec(`
     ON uptime_epoch_snapshots(epoch DESC);
   CREATE INDEX IF NOT EXISTS idx_epoch_snapshots_ts
     ON uptime_epoch_snapshots(snapshot_ts DESC);
+
+  -- Staking precompile event log. ValidatorRewarded is excluded on purpose:
+  -- it fires once per block (~286k/day) and is aggregated separately below.
+  CREATE TABLE IF NOT EXISTS staking_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    block_number INTEGER NOT NULL,
+    log_index INTEGER NOT NULL,
+    tx_hash TEXT,
+    event_type TEXT NOT NULL,
+    validator_id INTEGER,
+    address TEXT,
+    amount_wei TEXT,
+    epoch INTEGER,
+    extra TEXT,
+    block_ts INTEGER,
+    UNIQUE(block_number, log_index)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_staking_events_validator
+    ON staking_events(validator_id, block_number DESC);
+  CREATE INDEX IF NOT EXISTS idx_staking_events_type
+    ON staking_events(event_type, block_number DESC);
+  CREATE INDEX IF NOT EXISTS idx_staking_events_address
+    ON staking_events(address, block_number DESC);
+  CREATE INDEX IF NOT EXISTS idx_staking_events_block
+    ON staking_events(block_number DESC);
+
+  -- ValidatorRewarded rolled up per validator per epoch. Storing it raw would
+  -- cost ~15 GB/year; this is ~455k rows/year instead.
+  CREATE TABLE IF NOT EXISTS validator_rewards_epoch (
+    validator_id INTEGER NOT NULL,
+    epoch INTEGER NOT NULL,
+    reward_wei TEXT NOT NULL DEFAULT '0',
+    event_count INTEGER NOT NULL DEFAULT 0,
+    first_block INTEGER,
+    last_block INTEGER,
+    updated_at INTEGER DEFAULT (strftime('%s', 'now')),
+    PRIMARY KEY (validator_id, epoch)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_rewards_epoch
+    ON validator_rewards_epoch(epoch DESC);
+
+  CREATE TABLE IF NOT EXISTS indexer_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+  );
 `);
 
 // seq_num column yoksa ekle
@@ -517,6 +565,132 @@ export function getAllCumulativeUptime(period = "all") {
     total: r.total,
     uptime_percent: r.total > 0 ? parseFloat(((r.finalized / r.total) * 100).toFixed(2)) : 0,
   }));
+}
+
+// ---------- Staking Event Indexer ----------
+
+export function getIndexerCursor(key) {
+  const row = db.prepare("SELECT value FROM indexer_state WHERE key = ?").get(key);
+  return row ? row.value : null;
+}
+
+const setCursorStmt = db.prepare(`
+  INSERT INTO indexer_state (key, value, updated_at)
+  VALUES (?, ?, strftime('%s', 'now'))
+  ON CONFLICT(key) DO UPDATE SET
+    value = excluded.value,
+    updated_at = strftime('%s', 'now')
+`);
+
+export function setIndexerCursor(key, value) {
+  return setCursorStmt.run(key, String(value));
+}
+
+const insertEventStmt = db.prepare(`
+  INSERT OR IGNORE INTO staking_events
+    (block_number, log_index, tx_hash, event_type, validator_id, address, amount_wei, epoch, extra, block_ts)
+  VALUES (@blockNumber, @logIndex, @txHash, @eventType, @validatorId, @address, @amountWei, @epoch, @extra, @blockTs)
+`);
+
+const getRewardStmt = db.prepare(`
+  SELECT reward_wei, event_count FROM validator_rewards_epoch
+  WHERE validator_id = ? AND epoch = ?
+`);
+
+// first_block is deliberately absent from the UPDATE clause so the earliest
+// block we ever saw for this (validator, epoch) survives later batches.
+const upsertRewardStmt = db.prepare(`
+  INSERT INTO validator_rewards_epoch
+    (validator_id, epoch, reward_wei, event_count, first_block, last_block, updated_at)
+  VALUES (?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
+  ON CONFLICT(validator_id, epoch) DO UPDATE SET
+    reward_wei = excluded.reward_wei,
+    event_count = excluded.event_count,
+    last_block = excluded.last_block,
+    updated_at = strftime('%s', 'now')
+`);
+
+/**
+ * Commit one indexed block range atomically.
+ *
+ * Rewards accumulate by read-modify-write, so replaying a range would double
+ * count. Advancing the cursor in the same transaction as the writes is what
+ * prevents that: a crash rolls back the data and the cursor together, and the
+ * range is retried from a clean state.
+ */
+export const commitIndexedRange = db.transaction((events, rewards, cursorKey, cursorValue) => {
+  for (const e of events) {
+    insertEventStmt.run(e);
+  }
+
+  for (const r of rewards) {
+    const existing = getRewardStmt.get(r.validatorId, r.epoch);
+    const total = (existing ? BigInt(existing.reward_wei) : 0n) + r.amountWei;
+    const count = (existing ? existing.event_count : 0) + r.count;
+    upsertRewardStmt.run(
+      r.validatorId,
+      r.epoch,
+      total.toString(),
+      count,
+      r.firstBlock,
+      r.lastBlock
+    );
+  }
+
+  setCursorStmt.run(cursorKey, String(cursorValue));
+});
+
+export function getStakingEvents({ validatorId, address, eventType, limit = 50 } = {}) {
+  const where = [];
+  const params = [];
+
+  if (validatorId != null) {
+    where.push("validator_id = ?");
+    params.push(validatorId);
+  }
+  if (address) {
+    where.push("address = ?");
+    params.push(address.toLowerCase());
+  }
+  if (eventType) {
+    where.push("event_type = ?");
+    params.push(eventType);
+  }
+
+  params.push(Math.min(Math.max(limit, 1), 500));
+
+  return db.prepare(`
+    SELECT block_number, log_index, tx_hash, event_type, validator_id,
+           address, amount_wei, epoch, extra, block_ts
+    FROM staking_events
+    ${where.length ? "WHERE " + where.join(" AND ") : ""}
+    ORDER BY block_number DESC, log_index DESC
+    LIMIT ?
+  `).all(...params);
+}
+
+export function getValidatorEpochRewards(validatorId, limit = 100) {
+  return db.prepare(`
+    SELECT epoch, reward_wei, event_count, first_block, last_block
+    FROM validator_rewards_epoch
+    WHERE validator_id = ?
+    ORDER BY epoch DESC
+    LIMIT ?
+  `).all(validatorId, Math.min(Math.max(limit, 1), 500));
+}
+
+export function getIndexerStats() {
+  const events = db.prepare("SELECT COUNT(*) as c FROM staking_events").get().c;
+  const rewardRows = db.prepare("SELECT COUNT(*) as c FROM validator_rewards_epoch").get().c;
+  const range = db.prepare(
+    "SELECT MIN(block_number) as first, MAX(block_number) as last FROM staking_events"
+  ).get();
+  return {
+    events,
+    reward_rows: rewardRows,
+    first_event_block: range?.first ?? null,
+    last_event_block: range?.last ?? null,
+  };
 }
 
 export default db;
