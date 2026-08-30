@@ -391,10 +391,9 @@ router.get("/vdp", (req, res) => {
     const results = [];
 
     for (const v of validators) {
-      const rows = byValidator.get(v.id);
-      if (!rows) continue;
-
-      const weeks = evaluateWeeks(rows);
+      // A validator with no snapshots at all is the most insufficient case
+      // there is, so it belongs in the list rather than dropped from it.
+      const weeks = evaluateWeeks(byValidator.get(v.id) || []);
       const verdict = evaluateCompliance(weeks, commissionOf(v));
 
       results.push({
