@@ -54,6 +54,9 @@ class Registry {
 
 const VDP_STATES = ["compliant", "at_risk", "breach", "insufficient_data"];
 
+// The Validator Delegation Program is a mainnet arrangement.
+const IS_MAINNET = (process.env.NETWORK || "").toLowerCase() === "mainnet";
+
 export function renderMetrics() {
   const r = new Registry();
   const validators = getAllValidators();
@@ -126,52 +129,57 @@ export function renderMetrics() {
   r.metric("monad_validator_commission_percent", "Validator commission.", "gauge", commission);
 
   // ---------- VDP compliance ----------
-  const weeksByValidator = new Map();
-  for (const row of getAllWeeklyUptime()) {
-    if (!weeksByValidator.has(row.validator_id)) weeksByValidator.set(row.validator_id, []);
-    weeksByValidator.get(row.validator_id).push(row);
+  // The delegation program is a mainnet arrangement. The weekly uptime maths
+  // runs anywhere, but a testnet "breach" means nothing, so these series are
+  // withheld rather than left to raise alerts nobody should act on.
+  if (IS_MAINNET) {
+    const weeksByValidator = new Map();
+    for (const row of getAllWeeklyUptime()) {
+      if (!weeksByValidator.has(row.validator_id)) weeksByValidator.set(row.validator_id, []);
+      weeksByValidator.get(row.validator_id).push(row);
+    }
+
+    const strikes = [];
+    const compliant = [];
+    const stateCounts = Object.fromEntries(VDP_STATES.map((s) => [s, 0]));
+
+    for (const v of validators) {
+      const weeks = evaluateWeeks(weeksByValidator.get(v.id) || []);
+      const verdict = evaluateCompliance(weeks, commissionOf(v));
+      const l = labels({ id: v.id, name: v.name });
+
+      strikes.push([l, verdict.uptime.strikes]);
+      // Only a verdict backed by enough history claims compliance; anything else
+      // is 0 so an alert cannot be silenced by a validator we barely know.
+      compliant.push([l, verdict.status === "compliant" ? 1 : 0]);
+      stateCounts[verdict.status] = (stateCounts[verdict.status] || 0) + 1;
+    }
+
+    r.metric(
+      "monad_validator_vdp_strikes",
+      `Weeks below ${VDP_RULES.uptime_threshold}% inside the ${VDP_RULES.strike_window_days} day window.`,
+      "gauge",
+      strikes
+    );
+    r.metric(
+      "monad_validator_vdp_compliant",
+      "1 when the validator is compliant on a full window, 0 otherwise.",
+      "gauge",
+      compliant
+    );
+    r.metric(
+      "monad_validators_vdp",
+      "Validators by VDP status.",
+      "gauge",
+      VDP_STATES.map((s) => [labels({ state: s }), stateCounts[s] || 0])
+    );
+    r.metric(
+      "monad_vdp_max_strikes",
+      "Strikes that warrant removal from the program.",
+      "gauge",
+      [["", VDP_RULES.max_strikes]]
+    );
   }
-
-  const strikes = [];
-  const compliant = [];
-  const stateCounts = Object.fromEntries(VDP_STATES.map((s) => [s, 0]));
-
-  for (const v of validators) {
-    const weeks = evaluateWeeks(weeksByValidator.get(v.id) || []);
-    const verdict = evaluateCompliance(weeks, commissionOf(v));
-    const l = labels({ id: v.id, name: v.name });
-
-    strikes.push([l, verdict.uptime.strikes]);
-    // Only a verdict backed by enough history claims compliance; anything else
-    // is 0 so an alert cannot be silenced by a validator we barely know.
-    compliant.push([l, verdict.status === "compliant" ? 1 : 0]);
-    stateCounts[verdict.status] = (stateCounts[verdict.status] || 0) + 1;
-  }
-
-  r.metric(
-    "monad_validator_vdp_strikes",
-    `Weeks below ${VDP_RULES.uptime_threshold}% inside the ${VDP_RULES.strike_window_days} day window.`,
-    "gauge",
-    strikes
-  );
-  r.metric(
-    "monad_validator_vdp_compliant",
-    "1 when the validator is compliant on a full window, 0 otherwise.",
-    "gauge",
-    compliant
-  );
-  r.metric(
-    "monad_validators_vdp",
-    "Validators by VDP status.",
-    "gauge",
-    VDP_STATES.map((s) => [labels({ state: s }), stateCounts[s] || 0])
-  );
-  r.metric(
-    "monad_vdp_max_strikes",
-    "Strikes that warrant removal from the program.",
-    "gauge",
-    [["", VDP_RULES.max_strikes]]
-  );
 
   // ---------- indexer and chain ----------
   const idx = getIndexerStats();
