@@ -11,8 +11,18 @@ import {
   getAllCumulativeUptime,
   getEpochCoverage,
   getNetworkUptimeByEpoch,
-  getValidatorCountsByStatus
+  getValidatorCountsByStatus,
+  getWeeklyUptime,
+  getAllWeeklyUptime,
+  getAllUptimeStats
 } from "./db.js";
+import {
+  VDP_RULES,
+  VDP_NOTE,
+  evaluateWeeks,
+  evaluateCompliance,
+  commissionOf
+} from "./vdp.js";
 
 const router = Router();
 
@@ -65,7 +75,9 @@ function formatValidator(v) {
   };
 }
 
-function formatUptime(stats, validator, lastEvent = null) {
+// lastHeight is passed in rather than looked up here, so the list route can
+// resolve it for every validator in one query instead of one query each.
+function formatUptime(stats, validator, lastEvent = null, lastHeight = undefined) {
   return {
     validator_id: validator.id,
     validator_name: validator.name,
@@ -77,7 +89,8 @@ function formatUptime(stats, validator, lastEvent = null) {
     total_events: stats.total,
     uptime_percent: parseFloat(stats.uptime_percent),
     last_round: lastEvent?.round || null,
-    last_block_height: getLastFinalizedHeight(validator.id),
+    last_block_height:
+      lastHeight === undefined ? getLastFinalizedHeight(validator.id) : lastHeight,
     since_timestamp: stats.since_timestamp,
     since_utc: new Date(stats.since_timestamp * 1000).toISOString()
   };
@@ -88,10 +101,20 @@ function formatUptime(stats, validator, lastEvent = null) {
 // GET /monad-api/validators
 router.get("/", (req, res) => {
   try {
-    const validators = getAllValidators();
+    const all = getAllValidators();
+    const total = all.length;
+
+    // Optional: the full set is small enough to return whole, so paging stays
+    // opt-in rather than a breaking change to the default response.
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
+    const validators = req.query.limit
+      ? all.slice(offset, offset + Math.min(Math.max(Number(req.query.limit) || 50, 1), 500))
+      : all.slice(offset);
+
     res.json({
       success: true,
       count: validators.length,
+      total,
       validators: validators.map(formatValidator)
     });
   } catch (err) {
@@ -265,23 +288,34 @@ router.get("/uptime", (req, res) => {
     }
 
     const validators = getAllValidators();
-    let results = validators.map(v => {
-      const stats = getUptimeStats(v.id, windowHours);
-      const recentEvents = getRecentEvents(v.id, 1);
-      const lastEvent = recentEvents.length > 0 ? recentEvents[0] : null;
-      return formatUptime(stats, v, lastEvent);
-    });
-    
+    const bulk = getAllUptimeStats(windowHours);
+
+    let results = validators.map(v =>
+      formatUptime(
+        bulk.stats.get(v.id) || bulk.emptyStats,
+        v,
+        bulk.lastEvent.get(v.id) || null,
+        bulk.lastHeight.get(v.id) ?? null
+      )
+    );
+
     if (sortBy === "uptime") {
       results.sort((a, b) => b.uptime_percent - a.uptime_percent);
     } else if (sortBy === "id") {
       results.sort((a, b) => a.validator_id - b.validator_id);
     }
-    
+
+    const total = results.length;
+    if (req.query.limit) {
+      const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 500);
+      results = results.slice(0, limit);
+    }
+
     res.json({
       success: true,
       window_hours: windowHours,
       count: results.length,
+      total,
       validators: results
     });
   } catch (err) {
@@ -337,6 +371,100 @@ router.get("/network/uptime", (req, res) => {
         snapshot_ts: e.snapshot_ts,
         snapshot_utc: toISO(e.snapshot_ts)
       }))
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /monad-api/validators/vdp
+// Compliance status for every validator, worst first.
+router.get("/vdp", (req, res) => {
+  try {
+    const byValidator = new Map();
+    for (const row of getAllWeeklyUptime()) {
+      if (!byValidator.has(row.validator_id)) byValidator.set(row.validator_id, []);
+      byValidator.get(row.validator_id).push(row);
+    }
+
+    const validators = getAllValidators();
+    const results = [];
+
+    for (const v of validators) {
+      const rows = byValidator.get(v.id);
+      if (!rows) continue;
+
+      const weeks = evaluateWeeks(rows);
+      const verdict = evaluateCompliance(weeks, commissionOf(v));
+
+      results.push({
+        validator_id: v.id,
+        validator_name: v.name,
+        status: v.status || "unknown",
+        vdp_status: verdict.status,
+        strikes: verdict.uptime.strikes,
+        strikes_remaining: verdict.uptime.strikes_remaining,
+        commission: verdict.commission.current,
+        commission_compliant: verdict.commission.compliant,
+        weeks_in_window: verdict.coverage.weeks_in_window,
+        sufficient_data: verdict.coverage.sufficient,
+        // What we have seen across all recorded history, not just the window.
+        observed_weeks: verdict.observed.complete_weeks,
+        observed_weeks_below_threshold: verdict.observed.weeks_below_threshold,
+        observed_uptime_percent: verdict.observed.uptime_percent,
+        observed_since_utc: verdict.observed.since_utc
+      });
+    }
+
+    // Surface problems first: breaches, then at risk, then by strike count.
+    const rank = { breach: 0, at_risk: 1, insufficient_data: 2, compliant: 3 };
+    results.sort(
+      (a, b) => rank[a.vdp_status] - rank[b.vdp_status] || b.strikes - a.strikes
+    );
+
+    const summary = { breach: 0, at_risk: 0, insufficient_data: 0, compliant: 0 };
+    for (const r of results) summary[r.vdp_status]++;
+
+    res.json({
+      success: true,
+      rules: VDP_RULES,
+      note: VDP_NOTE,
+      summary,
+      count: results.length,
+      validators: results
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /monad-api/validators/:idOrAddress/vdp
+router.get("/:idOrAddress/vdp", (req, res) => {
+  try {
+    const { idOrAddress } = req.params;
+    const validator = resolveValidator(idOrAddress);
+    if (!validator) {
+      return res.status(404).json({
+        success: false,
+        error: "Validator not found",
+        hint: "Use validator ID (e.g., 1) or Secp address (0x...)"
+      });
+    }
+
+    const weeks = evaluateWeeks(getWeeklyUptime(validator.id));
+    const verdict = evaluateCompliance(weeks, commissionOf(validator));
+
+    res.json({
+      success: true,
+      rules: VDP_RULES,
+      note: VDP_NOTE,
+      vdp: {
+        validator_id: validator.id,
+        validator_name: validator.name,
+        status: validator.status || "unknown",
+        ...verdict,
+        weeks
+      }
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });

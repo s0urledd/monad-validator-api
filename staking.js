@@ -115,6 +115,25 @@ export function getAllDelegations(delegatorAddress) {
   });
 }
 
+/**
+ * One page of delegators, straight from the precompile's own pagination.
+ *
+ * The docs warn that a validator's delegator set can be very large and that
+ * walking all of it is an expensive lookup, so the cursor is exposed to
+ * callers rather than hidden behind a loop that fetches everything.
+ */
+export function getDelegatorsPage(valId, startDelegator = ethers.ZeroAddress) {
+  return cached(`delegators-page:${valId}:${startDelegator}`, async () => {
+    const contract = getContract();
+    const result = await contract.getDelegators.staticCall(valId, startDelegator);
+    return {
+      isDone: result[0],
+      nextDelegator: result[1],
+      delegators: [...result[2]],
+    };
+  });
+}
+
 export function getAllDelegators(valId) {
   return cached(`delegators:${valId}`, async () => {
     const contract = getContract();

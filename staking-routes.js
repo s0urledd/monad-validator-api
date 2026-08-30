@@ -6,6 +6,7 @@ import {
   getDelegatorInfo,
   getAllDelegations,
   getAllDelegators,
+  getDelegatorsPage,
   getEpochInfo,
   getLivePool,
   getValidatorSets,
@@ -399,34 +400,70 @@ router.get("/validator/:valId/delegators", async (req, res) => {
     }
 
     const validator = getValidatorById(valId);
-    const delegatorAddresses = await getAllDelegators(valId);
 
-    // Fetch delegation details for each delegator (batched)
+    // Walk the precompile's pagination only as far as this page needs. Fetching
+    // every delegator turned one HTTP request into an unbounded number of RPC
+    // calls, which is exactly what the staking docs warn against.
+    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
+    const cursor = req.query.cursor;
+    if (cursor && !ethers.isAddress(cursor)) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid cursor",
+        hint: "Pass the next_cursor value from a previous response",
+      });
+    }
+
+    const addresses = [];
+    let next = cursor ? ethers.getAddress(cursor) : ethers.ZeroAddress;
+    let done = false;
+    const startedAtBeginning = !cursor;
+
+    while (addresses.length < limit && !done) {
+      const page = await getDelegatorsPage(valId, next);
+      addresses.push(...page.delegators);
+      done = page.isDone;
+      next = page.nextDelegator;
+    }
+
+    const pageAddresses = addresses.slice(0, limit);
+
+    // Pages arrive in fixed-size chunks, so the last one can overshoot the
+    // requested limit. When that happens the next cursor is the first address
+    // we did not return, not the precompile's nextDelegator, which already
+    // points past everything we fetched.
+    const hasMore = addresses.length > limit || !done;
+    const nextCursor = hasMore ? (addresses[limit] ?? next) : null;
+
     const delegators = [];
     const batchSize = 10;
-
-    for (let i = 0; i < delegatorAddresses.length; i += batchSize) {
-      const batch = delegatorAddresses.slice(i, i + batchSize);
-      const promises = batch.map(async (addr) => {
-        try {
-          const info = await getDelegatorInfo(valId, addr);
-          return { address: addr, stake: info.stake, unclaimed_rewards: info.unclaimed_rewards };
-        } catch {
-          return { address: addr, stake: 0, unclaimed_rewards: 0 };
-        }
-      });
-      const results = await Promise.all(promises);
+    for (let i = 0; i < pageAddresses.length; i += batchSize) {
+      const batch = pageAddresses.slice(i, i + batchSize);
+      const results = await Promise.all(
+        batch.map(async (addr) => {
+          try {
+            const info = await getDelegatorInfo(valId, addr);
+            return { address: addr, stake: info.stake, unclaimed_rewards: info.unclaimed_rewards };
+          } catch {
+            return { address: addr, stake: 0, unclaimed_rewards: 0 };
+          }
+        })
+      );
       delegators.push(...results);
     }
 
-    // Sort by stake descending
+    // Sorting applies within the page; the precompile orders by address.
     delegators.sort((a, b) => (b.stake || 0) - (a.stake || 0));
 
     res.json({
       success: true,
       validator_id: valId,
       validator_name: validator?.name || `Validator #${valId}`,
-      total_delegators: delegators.length,
+      count: delegators.length,
+      // Only meaningful when a single request covered the whole set; otherwise
+      // the total is unknown without walking every page.
+      total_delegators: startedAtBeginning && !hasMore ? delegators.length : null,
+      next_cursor: nextCursor,
       delegators,
     });
   } catch (err) {
