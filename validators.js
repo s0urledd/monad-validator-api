@@ -19,6 +19,7 @@ import {
 import {
   VDP_RULES,
   VDP_NOTE,
+  VDP_APPLIES,
   evaluateWeeks,
   evaluateCompliance,
   commissionOf
@@ -391,10 +392,9 @@ router.get("/vdp", (req, res) => {
     const results = [];
 
     for (const v of validators) {
-      const rows = byValidator.get(v.id);
-      if (!rows) continue;
-
-      const weeks = evaluateWeeks(rows);
+      // A validator with no snapshots at all is the most insufficient case
+      // there is, so it belongs in the list rather than dropped from it.
+      const weeks = evaluateWeeks(byValidator.get(v.id) || []);
       const verdict = evaluateCompliance(weeks, commissionOf(v));
 
       results.push({
@@ -428,6 +428,7 @@ router.get("/vdp", (req, res) => {
     res.json({
       success: true,
       rules: VDP_RULES,
+      applies: VDP_APPLIES,
       note: VDP_NOTE,
       summary,
       count: results.length,
@@ -457,6 +458,7 @@ router.get("/:idOrAddress/vdp", (req, res) => {
     res.json({
       success: true,
       rules: VDP_RULES,
+      applies: VDP_APPLIES,
       note: VDP_NOTE,
       vdp: {
         validator_id: validator.id,

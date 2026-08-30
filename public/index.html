@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Monad Validator &amp; Staking API</title>
+<meta name="description" content="Validator metadata, uptime history, VDP compliance and on-chain staking data for Monad.">
+<meta name="theme-color" content="#0e091c">
+<link rel="icon" type="image/png" href="/huginn-logo.png">
+<style>
+:root{
+  --bg:#0e091c; --bg-2:#0a0617; --card:#ffffff08; --card-2:#ffffff0d;
+  --popover:#181028; --fg:#f4f2fb; --muted:#a89fc8; --border:#ffffff14;
+  --border-2:#ffffff1f; --primary:#836ef9; --primary-2:#6e54ff;
+  --lav:#ddd7fe; --green:#4ade80; --amber:#fbbf24; --red:#ef4444;
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:80px}
+body{
+  background:var(--bg);color:var(--fg);
+  font-family:Geist,-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;line-height:1.6;
+}
+a{color:inherit;text-decoration:none}
+.wrap{max-width:1200px;margin:0 auto;padding:0 24px}
+
+/* ---------- nav ---------- */
+nav{
+  position:sticky;top:0;z-index:50;
+  background:#0e091ccc;backdrop-filter:blur(12px);
+  border-bottom:1px solid var(--border);
+}
+nav .wrap{display:flex;align-items:center;gap:28px;height:60px}
+.brand{display:flex;align-items:center;gap:9px;font-weight:600;letter-spacing:-.01em}
+.brand .mark{width:24px;height:24px;flex:none;display:block}
+.nav-links{display:flex;gap:22px;margin-left:auto;font-size:14px;color:var(--muted)}
+.nav-links a:hover{color:var(--fg)}
+.net{display:flex;gap:2px;padding:3px;border-radius:99px;background:var(--card);
+  border:1px solid var(--border)}
+.net a{font-size:12px;padding:4px 12px;border-radius:99px;color:var(--muted)}
+.net a:hover{color:var(--fg)}
+.net a.on{background:var(--primary-2);color:#fff}
+.pill{
+  display:inline-flex;align-items:center;gap:7px;font-size:12px;
+  padding:5px 11px;border-radius:99px;border:1px solid var(--border);
+  background:var(--card);color:var(--muted);
+}
+.dot{width:6px;height:6px;border-radius:99px;background:var(--green);flex:none}
+.dot.off{background:var(--muted)}
+
+/* ---------- hero ---------- */
+header{padding:64px 0 56px}
+.hero{position:relative;max-width:760px}
+h1{font-size:40px;line-height:1.15;letter-spacing:-.02em;font-weight:600}
+.lede{font-size:16.5px;color:var(--muted);margin-top:16px;max-width:600px}
+.cta{display:flex;gap:12px;margin-top:32px;flex-wrap:wrap}
+.btn{
+  display:inline-flex;align-items:center;gap:8px;font-size:14px;font-weight:500;
+  padding:11px 20px;border-radius:6px;border:1px solid transparent;transition:.15s;
+}
+.btn-primary{background:var(--primary-2);color:#fff}
+.btn-primary:hover{background:var(--primary)}
+.btn-ghost{border-color:var(--border-2);color:var(--fg);background:var(--card)}
+.btn-ghost:hover{background:var(--card-2);border-color:#ffffff33}
+
+/* ---------- sections ---------- */
+section{padding:64px 0;border-top:1px solid var(--border)}
+.sec-label{
+  font-size:11px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--primary);margin-bottom:12px;
+}
+h2{font-size:32px;letter-spacing:-.02em;font-weight:620}
+.sec-lede{color:var(--muted);margin-top:12px;max-width:640px}
+
+/* code */
+.code{
+  border:1px solid var(--border);border-radius:8px;background:var(--bg-2);
+  overflow:hidden;margin-top:22px;
+}
+.code-head{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:9px 14px;border-bottom:1px solid var(--border);
+  font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);
+}
+.copy{
+  font:inherit;font-size:11px;letter-spacing:.05em;cursor:pointer;color:var(--muted);
+  background:var(--card);border:1px solid var(--border);border-radius:6px;padding:4px 9px;
+}
+.copy:hover{color:var(--fg);border-color:var(--border-2)}
+pre{padding:15px;overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.7}
+.c-cmd{color:var(--lav)}.c-url{color:var(--green)}.c-flag{color:var(--primary)}
+.c-key{color:#7dd3fc}.c-str{color:#a5f3a0}.c-num{color:#fbbf24}.c-lit{color:#c084fc}
+
+/* ---------- reference ---------- */
+.ref{display:grid;grid-template-columns:236px 1fr;gap:32px;margin-top:36px;align-items:start}
+.side{position:sticky;top:78px;max-height:calc(100vh - 100px);overflow-y:auto}
+.side input{
+  width:100%;font:inherit;font-size:13px;padding:8px 12px;border-radius:6px;
+  background:var(--card);border:1px solid var(--border);color:var(--fg);margin-bottom:16px;
+}
+.side input::placeholder{color:var(--muted)}
+.side input:focus{outline:none;border-color:#6e54ff73}
+.grp{font-size:10.5px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--muted);margin:16px 0 7px}
+.side a{
+  display:flex;align-items:flex-start;gap:8px;padding:5px 9px;border-radius:5px;
+  font-size:12px;color:var(--muted);font-family:var(--mono);
+  line-height:1.5;word-break:break-word;
+}
+.side a:hover{background:var(--card);color:var(--fg)}
+.m{
+  font-size:9.5px;font-weight:700;letter-spacing:.05em;padding:2px 5px;border-radius:4px;
+  background:#4ade8026;color:var(--green);flex:none;font-family:var(--mono);
+  margin-top:2px;
+}
+.ep-desc code, td code.inline{
+  font-family:var(--mono);font-size:12px;color:var(--lav);
+  background:var(--card-2);border-radius:4px;padding:1px 5px;
+}
+.ep{border:1px solid var(--border);border-radius:8px;background:var(--card);margin-bottom:14px;overflow:hidden}
+.ep-head{display:flex;align-items:center;gap:11px;padding:15px 18px;cursor:pointer;user-select:none}
+.ep-head:hover{background:var(--card-2)}
+.ep-path{font-family:var(--mono);font-size:13.5px;font-weight:500}
+.ep-sum{font-size:13px;color:var(--muted);margin-left:auto;text-align:right}
+.ep-body{padding:0 18px 18px;border-top:1px solid var(--border);display:none}
+.ep.open .ep-body{display:block}
+.ep-desc{font-size:13.5px;color:var(--muted);margin:16px 0;line-height:1.65;white-space:pre-line}
+h4{font-size:10.5px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--muted);margin:18px 0 9px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;font-weight:500;color:var(--muted);font-size:11px;
+  letter-spacing:.06em;text-transform:uppercase;padding:7px 10px;border-bottom:1px solid var(--border)}
+td{padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+tr:last-child td{border-bottom:none}
+td code{font-family:var(--mono);font-size:12px;color:var(--lav)}
+.req{font-size:10px;color:var(--red);margin-left:5px}
+.enum{font-family:var(--mono);font-size:11.5px;color:var(--primary)}
+
+footer{padding:44px 0;border-top:1px solid var(--border);color:var(--muted);font-size:13px}
+footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
+
+@media(max-width:940px){
+  .ref{grid-template-columns:1fr}
+  .side{position:static;max-height:none}
+  h1{font-size:40px}
+  .nav-links{display:none}
+}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <a href="#" class="brand"><img class="mark" src="/huginn-logo.png" alt="Huginn"> Validator &amp; Staking API</a>
+    <div class="nav-links">
+      <a href="#reference">Reference</a>
+      <a href="/monad-api/openapi.json">OpenAPI</a>
+    </div>
+    <div class="net" id="net" hidden>
+      <a href="https://validator-api.huginn.tech/" data-net="mainnet">Mainnet</a>
+      <a href="https://validator-api-testnet.huginn.tech/" data-net="testnet">Testnet</a>
+    </div>
+    <span class="pill"><span class="dot" id="live-dot"></span><span id="live-label">checking</span></span>
+  </div>
+</nav>
+
+<header>
+  <div class="wrap">
+   <div class="hero">
+    <h1>Monad Validator &amp; Staking API</h1>
+    <p class="lede">
+      Validator metadata, uptime history, VDP compliance and on-chain staking
+      data. Uptime is measured from a validator node's own consensus log.
+      Read-only REST, no authentication.
+    </p>
+    <div class="cta">
+      <a class="btn btn-primary" href="#reference">Reference</a>
+      <a class="btn btn-ghost" href="/monad-api/openapi.json">OpenAPI spec</a>
+    </div>
+   </div>
+  </div>
+</header>
+
+<section id="reference">
+  <div class="wrap">
+    <h2>Endpoints</h2>
+    <p class="sec-lede">
+      Generated from the OpenAPI document this service publishes.
+    </p>
+
+    <div class="ref">
+      <aside class="side">
+        <input id="q" type="search" placeholder="Search endpoints…" autocomplete="off">
+        <div id="nav-list"></div>
+      </aside>
+      <main id="eps"></main>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>Monad Validator API — operated by <a href="https://monval.huginn.tech" style="color:var(--lav)">Huginn</a></span>
+    <span>MIT licensed · <a href="/monad-api/openapi.json" style="color:var(--lav)">openapi.json</a></span>
+  </div>
+</footer>
+
+<script>
+const ORIGIN = location.origin;
+
+/* Mainnet and testnet are separate deployments on separate hosts, so the
+   switcher is two links, with the one matching this host marked active. It
+   stays hidden anywhere else, including localhost. */
+(() => {
+  const net = location.hostname.includes('testnet') ? 'testnet'
+            : location.hostname.startsWith('validator-api.') ? 'mainnet'
+            : null;
+  if (!net) return;
+  const box = document.getElementById('net');
+  box.hidden = false;
+  box.querySelector(`[data-net="${net}"]`).classList.add('on');
+})();
+
+/* ---------------- syntax highlighting ---------------- */
+const esc = s => s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+// Descriptions in the spec use backticks for identifiers; render them as code.
+const ticks = s => esc(s).replace(/`([^`]+)`/g, '<code>$1</code>');
+
+function hlJson(obj){
+  return esc(JSON.stringify(obj, null, 2))
+    .replace(/^(\s*)&quot;([^&]+)&quot;:/gm, '$1<span class="c-key">"$2"</span>:')
+    .replace(/: &quot;([^&]*)&quot;/g, ': <span class="c-str">"$1"</span>')
+    .replace(/: (-?\d+\.?\d*)/g, ': <span class="c-num">$1</span>')
+    .replace(/: (true|false|null)/g, ': <span class="c-lit">$1</span>');
+}
+
+
+
+
+document.querySelectorAll('.copy').forEach(b => b.onclick = () => {
+  navigator.clipboard.writeText(document.getElementById(b.dataset.copy).textContent);
+  b.textContent = 'Copied'; setTimeout(() => b.textContent = 'Copy', 1400);
+});
+
+
+async function get(path){
+  const r = await fetch(ORIGIN + path, { headers: { accept: 'application/json' } });
+  if (!r.ok) throw new Error(r.status);
+  return r.json();
+}
+
+/* Health drives only the status pill in the nav. */
+get('/health').then(() => {
+  document.getElementById('live-label').textContent = 'live';
+}).catch(() => {
+  document.getElementById('live-dot').className = 'dot off';
+  document.getElementById('live-label').textContent = 'offline';
+});
+
+/* ---------------- reference, rendered from the spec ---------------- */
+const METHOD = 'get';
+
+function paramRows(params){
+  if (!params?.length) return '';
+  const rows = params.map(p => {
+    const s = p.schema || {};
+    let type = s.type || 'string';
+    if (s.enum) type = s.enum.map(e => '<span class="enum">' + esc(e) + '</span>').join(' · ');
+    else {
+      const bits = [];
+      if (s.minimum != null || s.maximum != null) bits.push([s.minimum, s.maximum].filter(x => x != null).join('–'));
+      if (s.default != null) bits.push('default ' + s.default);
+      if (bits.length) type += ' <span style="color:var(--muted)">(' + bits.join(', ') + ')</span>';
+    }
+    return '<tr><td><code>' + esc(p.name) + '</code>'
+      + (p.required ? '<span class="req">required</span>' : '')
+      + '</td><td>' + type + '</td><td style="color:var(--muted)">'
+      + ticks(p.description || '') + '</td></tr>';
+  }).join('');
+  return '<h4>Parameters</h4><table><thead><tr><th>Name</th><th>Type</th><th>Description</th></tr></thead><tbody>'
+    + rows + '</tbody></table>';
+}
+
+function responseBlock(responses){
+  const ok = responses?.['200'];
+  const ex = ok?.content?.['application/json']?.example;
+  let html = '';
+  if (ex) {
+    html += '<h4>Example response</h4><div class="code" style="margin-top:0">'
+      + '<div class="code-head"><span>200</span></div><pre>' + hlJson(ex) + '</pre></div>';
+  }
+  const others = Object.keys(responses || {}).filter(c => c !== '200');
+  if (others.length) {
+    html += '<h4>Other responses</h4><table><tbody>' + others.map(c =>
+      '<tr><td><code>' + c + '</code></td><td style="color:var(--muted)">'
+      + esc(responses[c].description || '') + '</td></tr>').join('') + '</tbody></table>';
+  }
+  return html;
+}
+
+function render(spec){
+  // resolve $ref inside the document
+  const deref = o => {
+    if (Array.isArray(o)) return o.map(deref);
+    if (o && typeof o === 'object') {
+      if (typeof o.$ref === 'string') {
+        const t = o.$ref.replace(/^#\//, '').split('/').reduce((a, k) => a?.[k], spec);
+        return deref(t);
+      }
+      return Object.fromEntries(Object.entries(o).map(([k, v]) => [k, deref(v)]));
+    }
+    return o;
+  };
+
+  const groups = new Map();
+  for (const [path, item] of Object.entries(spec.paths)) {
+    const op = item[METHOD];
+    if (!op) continue;
+    const tag = (op.tags && op.tags[0]) || 'Other';
+    if (!groups.has(tag)) groups.set(tag, []);
+    groups.get(tag).push({ path, op: deref(op) });
+  }
+
+  const order = (spec.tags || []).map(t => t.name);
+  const sorted = [...groups.keys()].sort((a, b) => {
+    const i = order.indexOf(a), j = order.indexOf(b);
+    return (i < 0 ? 99 : i) - (j < 0 ? 99 : j);
+  });
+
+  let nav = '', main = '';
+  for (const tag of sorted) {
+    nav += '<div class="grp">' + esc(tag) + '</div>';
+    for (const { path, op } of groups.get(tag)) {
+      const id = 'e-' + op.operationId;
+      const short = path.replace('/monad-api', '');
+      nav += '<a href="#' + id + '" data-s="' + esc((path + ' ' + op.summary).toLowerCase()) + '">'
+        + '<span class="m">GET</span> ' + esc(short) + '</a>';
+      main += '<div class="ep" id="' + id + '" data-s="'
+        + esc((path + ' ' + op.summary + ' ' + (op.description || '')).toLowerCase()) + '">'
+        + '<div class="ep-head"><span class="m">GET</span>'
+        + '<span class="ep-path">' + esc(path) + '</span>'
+        + '<span class="ep-sum">' + esc(op.summary || '') + '</span></div>'
+        + '<div class="ep-body">'
+        + (op.description ? '<div class="ep-desc">' + ticks(op.description) + '</div>' : '')
+        + paramRows(op.parameters)
+        + responseBlock(op.responses)
+        + '</div></div>';
+    }
+  }
+
+  document.getElementById('nav-list').innerHTML = nav;
+  document.getElementById('eps').innerHTML = main;
+
+  document.querySelectorAll('.ep-head').forEach(h =>
+    h.onclick = () => h.parentElement.classList.toggle('open'));
+
+  // deep link opens the target
+  const openHash = () => {
+    const el = document.querySelector(location.hash || 'nothing');
+    if (el?.classList.contains('ep')) el.classList.add('open');
+  };
+  addEventListener('hashchange', openHash);
+  openHash();
+
+  document.getElementById('q').oninput = e => {
+    const q = e.target.value.toLowerCase().trim();
+    document.querySelectorAll('#eps .ep, #nav-list a').forEach(el => {
+      el.style.display = !q || el.dataset.s.includes(q) ? '' : 'none';
+    });
+    document.querySelectorAll('#nav-list .grp').forEach(g => {
+      let n = g.nextElementSibling, any = false;
+      while (n && n.tagName === 'A') { if (n.style.display !== 'none') any = true; n = n.nextElementSibling; }
+      g.style.display = any ? '' : 'none';
+    });
+  };
+}
+
+get('/monad-api/openapi.json').then(render).catch(() => {
+  document.getElementById('eps').innerHTML =
+    '<div class="ep"><div class="ep-head"><span class="ep-sum">Could not load openapi.json</span></div></div>';
+});
+</script>
+</body>
+</html>

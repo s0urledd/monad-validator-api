@@ -1,0 +1,1257 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Monad Validator & Staking API",
+    "version": "2.1.0",
+    "summary": "Validator metadata, uptime history, VDP compliance and on-chain staking data for Monad.",
+    "description": "A REST API over Monad validator data.\n\nUptime is derived from a validator node's own consensus logs, which is the only way to attribute rounds to a proposer: none of Monad's three real-time data sources carry the block author, and the staking precompile's `getProposerValId` reports only the current proposer with no history.\n\nRaw rounds are kept in a 48 hour rolling window and rolled up into permanent per-epoch snapshots, so long-range figures survive the window. Staking precompile events are indexed as they are emitted, because the chain keeps no queryable history of them.\n\nNo authentication. Staking endpoints are rate limited per IP.",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    },
+    "contact": {
+      "name": "Huginn",
+      "url": "https://monval.huginn.tech"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://validator-api.huginn.tech",
+      "description": "Mainnet"
+    },
+    {
+      "url": "https://validator-api-testnet.huginn.tech",
+      "description": "Testnet"
+    },
+    {
+      "url": "http://localhost:3000",
+      "description": "Local"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Validators",
+      "description": "Metadata, stake and status."
+    },
+    {
+      "name": "Uptime",
+      "description": "Rolling and cumulative uptime, plus per-epoch history."
+    },
+    {
+      "name": "Compliance",
+      "description": "Validator Delegation Program status: weekly uptime and strikes."
+    },
+    {
+      "name": "Staking",
+      "description": "Live queries against the staking precompile at 0x…1000."
+    },
+    {
+      "name": "Events",
+      "description": "Indexed staking precompile events and block rewards."
+    },
+    {
+      "name": "System",
+      "description": "Health and service metadata."
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Health check",
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "Service is up.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": "ok",
+                  "timestamp": "2026-08-30T09:16:49.931Z",
+                  "validators_loaded": 279
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Prometheus metrics",
+        "description": "Scrape target in the Prometheus text exposition format. Every series is read from SQLite, so a scrape never waits on the node and is not rate limited.\n\nCovers per-validator uptime, stake, commission and VDP strikes, plus network totals, indexer progress and the measured block time.",
+        "operationId": "metrics",
+        "responses": {
+          "200": {
+            "description": "Metrics in text exposition format.",
+            "content": {
+              "text/plain": {
+                "example": "monad_api_up 1\nmonad_validators{status=\"active\"} 200\nmonad_validator_uptime_percent{id=\"1\",name=\"Example\",status=\"active\"} 99.95\nmonad_validator_vdp_strikes{id=\"1\",name=\"Example\"} 0\nmonad_network_uptime_percent 99.77\nmonad_measured_block_time_seconds 0.30264\n"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/monad-api/validators": {
+      "get": {
+        "tags": [
+          "Validators"
+        ],
+        "summary": "List validators",
+        "description": "Every known validator with metadata and synced on-chain staking data. `consensus_stake` is what is active this epoch and `snapshot_stake` what takes effect next epoch; their difference is a committed but not yet activated change.",
+        "operationId": "listValidators",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Offset"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Validator list.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "count": 279,
+                  "total": 279,
+                  "validators": [
+                    {
+                      "id": 1,
+                      "secp_address": "025f90fdc4f1ebe1a8939578d7f1ce53ecda08b18dda80aea9abe1e6a4546c3242",
+                      "name": "Monad Foundation - cs-arn-001",
+                      "status": "active",
+                      "stake": 26576251.82,
+                      "consensus_stake": 26576251.82,
+                      "snapshot_stake": 26575658.48,
+                      "commission": 10,
+                      "unclaimed_rewards": 1204.55,
+                      "updated_at": "2026-08-30T09:16:15.000Z"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/monad-api/validators/stats": {
+      "get": {
+        "tags": [
+          "Validators"
+        ],
+        "summary": "Validator counts",
+        "operationId": "validatorStats",
+        "responses": {
+          "200": {
+            "description": "Totals by status.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "total_validators": 279,
+                  "by_status": {
+                    "active": 200,
+                    "pending": 16,
+                    "inactive": 63,
+                    "unknown": 0
+                  },
+                  "api_version": "1.0.0"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/monad-api/validators/{idOrAddress}": {
+      "get": {
+        "tags": [
+          "Validators"
+        ],
+        "summary": "Get a validator",
+        "operationId": "getValidator",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdOrAddress"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Validator record.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "validator": {
+                    "id": 1,
+                    "name": "Monad Foundation - cs-arn-001",
+                    "status": "active",
+                    "stake": 26576251.82,
+                    "commission": 10
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/monad-api/validators/uptime": {
+      "get": {
+        "tags": [
+          "Uptime"
+        ],
+        "summary": "Uptime for all validators",
+        "description": "Two modes. Without `period`, a rolling window over raw round events (default 24h, retained 48h). With `period`, cumulative totals from the permanent epoch snapshots, which reach back further than the raw window.\n\nResults are sorted by uptime descending, so adding `limit` gives a leaderboard.",
+        "operationId": "listUptime",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Window"
+          },
+          {
+            "$ref": "#/components/parameters/Period"
+          },
+          {
+            "$ref": "#/components/parameters/Sort"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Uptime list.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "period": "30d",
+                  "count": 5,
+                  "total": 245,
+                  "validators": [
+                    {
+                      "validator_id": 1,
+                      "validator_name": "Monad Foundation - cs-arn-001",
+                      "status": "active",
+                      "finalized_count": 393732,
+                      "timeout_count": 101,
+                      "total_events": 393833,
+                      "uptime_percent": 99.97
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        }
+      }
+    },
+    "/monad-api/validators/uptime/{idOrAddress}": {
+      "get": {
+        "tags": [
+          "Uptime"
+        ],
+        "summary": "Uptime for one validator",
+        "operationId": "getUptime",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdOrAddress"
+          },
+          {
+            "$ref": "#/components/parameters/Window"
+          },
+          {
+            "$ref": "#/components/parameters/Period"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Uptime figures.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "period": "all",
+                  "uptime": {
+                    "validator_id": 1,
+                    "validator_name": "Monad Foundation - cs-arn-001",
+                    "status": "active",
+                    "finalized_count": 393732,
+                    "timeout_count": 101,
+                    "total_events": 393833,
+                    "uptime_percent": 99.97
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/monad-api/validators/uptime/{idOrAddress}/history": {
+      "get": {
+        "tags": [
+          "Uptime"
+        ],
+        "summary": "Round-by-round history",
+        "description": "Individual consensus rounds from the rolling event window.",
+        "operationId": "getUptimeHistory",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdOrAddress"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 49
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recent rounds.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "validator_id": 1,
+                  "count": 3,
+                  "history": [
+                    {
+                      "round": 84021,
+                      "height": 58172060,
+                      "status": "finalized"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/monad-api/validators/network/uptime": {
+      "get": {
+        "tags": [
+          "Uptime"
+        ],
+        "summary": "Network-wide uptime per epoch",
+        "description": "Aggregate uptime for each epoch, with the number of validators that fell below the 98% VDP threshold in it.",
+        "operationId": "networkUptime",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Period"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Per-epoch network figures.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "period": "30d",
+                  "threshold": 98,
+                  "summary": {
+                    "epochs": 171,
+                    "finalized_count": 8549077,
+                    "timeout_count": 19309,
+                    "total_events": 8568386,
+                    "uptime_percent": 99.77
+                  },
+                  "epochs": [
+                    {
+                      "epoch": 1164,
+                      "validator_count": 200,
+                      "uptime_percent": 99.81,
+                      "below_threshold": 2,
+                      "snapshot_utc": "2026-08-30T09:12:00.000Z"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        }
+      }
+    },
+    "/monad-api/validators/vdp": {
+      "get": {
+        "tags": [
+          "Compliance"
+        ],
+        "summary": "VDP status for all validators",
+        "description": "Sorted worst first: breaches, then at risk, then by strike count.\n\nThe programme applies to mainnet. A deployment on any other network still computes the weekly figures, since the uptime is real, but reports `applies: false` and omits the VDP series from /metrics, so a testnet strike is not mistaken for programme standing.",
+        "operationId": "listVdp",
+        "responses": {
+          "200": {
+            "description": "Compliance summary.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "rules": {
+                    "uptime_threshold": 98,
+                    "max_strikes": 3,
+                    "strike_window_days": 90,
+                    "commission_cap": 15
+                  },
+                  "summary": {
+                    "breach": 11,
+                    "at_risk": 36,
+                    "insufficient_data": 3,
+                    "compliant": 229
+                  },
+                  "count": 279,
+                  "validators": [
+                    {
+                      "validator_id": 1,
+                      "validator_name": "Monad Foundation - cs-arn-001",
+                      "vdp_status": "compliant",
+                      "strikes": 0,
+                      "strikes_remaining": 3,
+                      "commission": 10,
+                      "commission_compliant": true,
+                      "observed_weeks": 22,
+                      "observed_weeks_below_threshold": 0,
+                      "observed_uptime_percent": 99.97,
+                      "sufficient_data": true
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/monad-api/validators/{idOrAddress}/vdp": {
+      "get": {
+        "tags": [
+          "Compliance"
+        ],
+        "summary": "VDP status for one validator",
+        "description": "The Validator Delegation Program requires uptime above 98%, evaluated weekly; three flagged weeks inside a 3 month period warrants removal.\n\nThe verdict is deliberately conservative. Three strikes is a breach whatever history is held, but no strikes over a handful of weeks does not establish compliance across a 3 month window, so that reports as `insufficient_data`. Alongside it, `observed` covers all recorded history and stays meaningful when the window is short.\n\nWeeks run Monday 00:00 UTC, which is this API's choice and not something the program specifies. Uptime is summed across a week's epochs and divided once, rather than averaging per-epoch percentages. The 48h upgrade window and 24h outreach requirements are not modelled.\n\nThe programme applies to mainnet. A deployment on any other network still computes the weekly figures, since the uptime is real, but reports `applies: false` and omits the VDP series from /metrics, so a testnet strike is not mistaken for programme standing.",
+        "operationId": "getVdp",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdOrAddress"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Compliance detail.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "rules": {
+                    "uptime_threshold": 98,
+                    "max_strikes": 3,
+                    "strike_window_days": 90,
+                    "commission_cap": 15
+                  },
+                  "vdp": {
+                    "validator_id": 1,
+                    "validator_name": "Monad Foundation - cs-arn-001",
+                    "status": "compliant",
+                    "uptime": {
+                      "strikes": 0,
+                      "strikes_remaining": 3,
+                      "flagged_weeks": []
+                    },
+                    "commission": {
+                      "current": 10,
+                      "cap": 15,
+                      "compliant": true
+                    },
+                    "observed": {
+                      "since_utc": "2026-03-23T00:00:00.000Z",
+                      "complete_weeks": 22,
+                      "weeks_below_threshold": 0,
+                      "uptime_percent": 99.97,
+                      "worst_week": {
+                        "week_start_utc": "2026-06-29T00:00:00.000Z",
+                        "uptime_percent": 99.5
+                      }
+                    },
+                    "coverage": {
+                      "complete_weeks": 22,
+                      "weeks_in_window": 11,
+                      "sufficient": true
+                    },
+                    "weeks": [
+                      {
+                        "week_start_utc": "2026-08-24T00:00:00.000Z",
+                        "complete": false,
+                        "epochs": 12,
+                        "uptime_percent": 99.98,
+                        "flagged": false
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/monad-api/validators/{idOrAddress}/health": {
+      "get": {
+        "tags": [
+          "Compliance"
+        ],
+        "summary": "Health state for monitoring",
+        "description": "`no_data` and `stale` are distinct: never having seen a validator is a different failure from having lost sight of one.",
+        "operationId": "getHealth",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdOrAddress"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Health state.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "health": {
+                    "validator_id": 1,
+                    "state": "healthy",
+                    "healthy": true,
+                    "threshold": 98,
+                    "uptime_24h": 100,
+                    "last_round": 84021,
+                    "last_block_height": 58172060,
+                    "seconds_since_last_event": 33,
+                    "snapshot_coverage": {
+                      "epochs": 709,
+                      "first_epoch": 439,
+                      "last_epoch": 1163,
+                      "since_utc": "2026-03-29T10:12:11.000Z"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/monad-api/staking/epoch": {
+      "get": {
+        "tags": [
+          "Staking"
+        ],
+        "summary": "Current epoch",
+        "operationId": "getEpoch",
+        "responses": {
+          "200": {
+            "description": "Epoch and delay period.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "epoch": 1164,
+                  "in_delay_period": false
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Upstream"
+          }
+        }
+      }
+    },
+    "/monad-api/staking/pool": {
+      "get": {
+        "tags": [
+          "Staking"
+        ],
+        "summary": "Staking pool and APR",
+        "description": "Two APR figures are published rather than one. `estimated_apr` uses the block time the protocol documentation implies; `calculated_apr` uses the block time measured from observed epoch snapshots. A hardcoded block time is the classic way to be silently wrong about yield, so every input is returned and the number stays auditable. `calculated_apr` is null until at least two epoch snapshots exist, in which case `apr` falls back to the estimate.\n\nRewards accrue only to the active consensus set, so `bonded_tokens` is the denominator. Commission applies to inflation rewards only; priority fees currently go entirely to the validator, so a single APR figure is inherently approximate.",
+        "operationId": "getPool",
+        "responses": {
+          "200": {
+            "description": "Pool totals.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "bonded_tokens": 2369864374.69,
+                  "total_staked": 2374112900.11,
+                  "apr": 79.21,
+                  "estimated_apr": 79.26,
+                  "calculated_apr": 79.21,
+                  "apr_inputs": {
+                    "block_reward": 18,
+                    "assumed_block_time": 0.3024,
+                    "measured_block_time": 0.3026,
+                    "blocks_per_year": 104287595,
+                    "bonded_tokens": 2369864374.69,
+                    "note": "Commission applies to inflation rewards only; priority fees currently go entirely to the validator."
+                  },
+                  "total_validators": 279,
+                  "active_validators": 200,
+                  "epoch": 1164,
+                  "in_delay_period": false
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/monad-api/staking/validator-set": {
+      "get": {
+        "tags": [
+          "Staking"
+        ],
+        "summary": "Active set and next-epoch transitions",
+        "description": "Compares the consensus set (active this epoch), the snapshot set (active next epoch) and the execution set (eligible), giving who is entering, who is leaving, and who is eligible but below the cut.",
+        "operationId": "getValidatorSet",
+        "responses": {
+          "200": {
+            "description": "Set membership and transitions.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "epoch": 1164,
+                  "in_delay_period": false,
+                  "counts": {
+                    "active": 200,
+                    "next_epoch": 200,
+                    "eligible": 208,
+                    "entering": 8,
+                    "leaving": 8,
+                    "eligible_not_active": 8
+                  },
+                  "entering": [
+                    {
+                      "validator_id": 231,
+                      "name": "Example",
+                      "stake": 10500000
+                    }
+                  ],
+                  "leaving": [],
+                  "eligible_not_active": []
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Upstream"
+          }
+        }
+      }
+    },
+    "/monad-api/staking/proposer": {
+      "get": {
+        "tags": [
+          "Staking"
+        ],
+        "summary": "Current block proposer",
+        "operationId": "getProposer",
+        "responses": {
+          "200": {
+            "description": "Proposer for the current block.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "proposer": {
+                    "validator_id": 249,
+                    "name": "GabbexNodes",
+                    "status": "active"
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Upstream"
+          }
+        }
+      }
+    },
+    "/monad-api/staking/validator/{valId}": {
+      "get": {
+        "tags": [
+          "Staking"
+        ],
+        "summary": "On-chain validator detail",
+        "description": "`self_stake` is the auth address's own delegation, which the active set requires to be at least 100,000 MON. `pending` reports changes committed on-chain that activate next epoch, including a commission change before it takes effect.",
+        "operationId": "getValidatorOnChain",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ValId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Live validator state.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "validator": {
+                    "id": 1,
+                    "name": "Monad Foundation - cs-arn-001",
+                    "status": "active",
+                    "stake": 26576251.82,
+                    "commission": 10,
+                    "self_stake": 25000000,
+                    "unclaimed_rewards": 1204.55,
+                    "auth_address": "0x8a5a...",
+                    "consensus_stake": 26576251.82,
+                    "snapshot_stake": 26575658.48,
+                    "consensus_commission": 10,
+                    "snapshot_commission": 10,
+                    "pending": {
+                      "stake_delta": -593.34,
+                      "commission_change": null
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Upstream"
+          }
+        }
+      }
+    },
+    "/monad-api/staking/validator/{valId}/delegators": {
+      "get": {
+        "tags": [
+          "Staking"
+        ],
+        "summary": "Delegators of a validator",
+        "description": "Paginated against the precompile's own cursor. A validator's delegator set can be very large and walking all of it is an expensive lookup, so only the requested page is fetched. Pass `next_cursor` from the previous response to continue.\n\n`total_delegators` is populated only when a single request covered the whole set; otherwise it is null, because the true total is not knowable without walking every page.",
+        "operationId": "listDelegators",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ValId"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "default": 100
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "The `next_cursor` from a previous response.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of delegators.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "validator_id": 1,
+                  "count": 3,
+                  "total_delegators": null,
+                  "next_cursor": "0x7321e7ec0B6a07083A8E9f58C8e17cb8386D3501",
+                  "delegators": [
+                    {
+                      "address": "0x1f2a...",
+                      "stake": 25000000,
+                      "unclaimed_rewards": 1204.55
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Upstream"
+          }
+        }
+      }
+    },
+    "/monad-api/staking/delegator/{address}": {
+      "get": {
+        "tags": [
+          "Staking"
+        ],
+        "summary": "Delegations for an address",
+        "operationId": "getDelegator",
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "0xBF4b..."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "All delegations held by the address.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "address": "0xBF4b...",
+                  "total_staked": 100000,
+                  "total_rewards": 18868.75,
+                  "delegation_count": 1,
+                  "delegations": [
+                    {
+                      "validator_id": 40,
+                      "validator_name": "Huginn",
+                      "stake": 100000,
+                      "unclaimed_rewards": 18868.75
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/monad-api/staking/events": {
+      "get": {
+        "tags": [
+          "Events"
+        ],
+        "summary": "Indexed staking events",
+        "description": "Events emitted by the staking precompile, captured as they occur. The chain keeps no queryable history of them, so anything not captured live is unrecoverable.\n\n`ValidatorRewarded` is excluded here: it fires once per block, and is aggregated per validator per epoch under the rewards endpoint instead.",
+        "operationId": "listEvents",
+        "parameters": [
+          {
+            "name": "type",
+            "in": "query",
+            "schema": {
+              "$ref": "#/components/schemas/EventType"
+            }
+          },
+          {
+            "name": "address",
+            "in": "query",
+            "description": "Filter by delegator or auth address.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "default": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recent events, newest first.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "indexer": {
+                    "events": 128,
+                    "reward_rows": 1400,
+                    "first_event_block": 58171961,
+                    "last_event_block": 58204410
+                  },
+                  "count": 1,
+                  "events": [
+                    {
+                      "block_number": 58204410,
+                      "event_type": "Delegate",
+                      "validator_id": 42,
+                      "address": "0x1f2a...",
+                      "amount": 5000,
+                      "epoch": 1165,
+                      "utc": "2026-08-30T11:02:14.000Z"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/monad-api/staking/validator/{valId}/events": {
+      "get": {
+        "tags": [
+          "Events"
+        ],
+        "summary": "Events for one validator",
+        "operationId": "listValidatorEvents",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ValId"
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "schema": {
+              "$ref": "#/components/schemas/EventType"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "default": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Events for the validator.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "validator_id": 42,
+                  "count": 1,
+                  "events": [
+                    {
+                      "block_number": 58204410,
+                      "event_type": "CommissionChanged",
+                      "validator_id": 42,
+                      "details": {
+                        "old_commission": "100000000000000000",
+                        "new_commission": "150000000000000000"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/monad-api/staking/validator/{valId}/rewards": {
+      "get": {
+        "tags": [
+          "Events"
+        ],
+        "summary": "Block rewards per epoch",
+        "description": "Rolled up from `ValidatorRewarded`, which fires once per block.\n\nThe event carries the delegators' share, not the whole block reward: the amount is `REWARD x (1 - commission)`, confirmed against every commission rate on the network. So `delegator_rewards` is measured, while `gross_rewards` and `commission_rewards` are derived on the assumption that each block paid exactly `block_reward`. That assumption holds for most epochs but not all, so the response names the derived fields.\n\n`blocks_proposed` counts reward events observed, which is how many blocks the validator led while the indexer was running.",
+        "operationId": "getValidatorRewards",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ValId"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "default": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Rewards by epoch, newest first.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "validator_id": 1,
+                  "epochs_covered": 1,
+                  "total_rewards": 396,
+                  "blocks_proposed": 22,
+                  "epochs": [
+                    {
+                      "epoch": 1164,
+                      "rewards": 396,
+                      "blocks_proposed": 22,
+                      "first_block": 58171962,
+                      "last_block": 58172060
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "IdOrAddress": {
+        "name": "idOrAddress",
+        "in": "path",
+        "required": true,
+        "description": "Numeric validator ID or secp256k1 compressed public key.",
+        "schema": {
+          "type": "string"
+        },
+        "example": "1"
+      },
+      "ValId": {
+        "name": "valId",
+        "in": "path",
+        "required": true,
+        "description": "Numeric validator ID.",
+        "schema": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "example": 1
+      },
+      "Window": {
+        "name": "window",
+        "in": "query",
+        "description": "Rolling window in hours over raw round events. Ignored when `period` is given.",
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 168,
+          "default": 24
+        }
+      },
+      "Period": {
+        "name": "period",
+        "in": "query",
+        "description": "Cumulative range over permanent epoch snapshots.",
+        "schema": {
+          "type": "string",
+          "enum": [
+            "30d",
+            "90d",
+            "all"
+          ]
+        }
+      },
+      "Sort": {
+        "name": "sort",
+        "in": "query",
+        "schema": {
+          "type": "string",
+          "enum": [
+            "uptime",
+            "id"
+          ],
+          "default": "uptime"
+        }
+      },
+      "Limit": {
+        "name": "limit",
+        "in": "query",
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500
+        }
+      },
+      "Offset": {
+        "name": "offset",
+        "in": "query",
+        "schema": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        }
+      }
+    },
+    "schemas": {
+      "EventType": {
+        "type": "string",
+        "enum": [
+          "Delegate",
+          "Undelegate",
+          "Withdraw",
+          "ClaimRewards",
+          "CommissionChanged",
+          "ValidatorCreated",
+          "ValidatorStatusChanged",
+          "EpochChanged"
+        ]
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "const": false
+          },
+          "error": {
+            "type": "string"
+          },
+          "hint": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Invalid parameter.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "success": false,
+              "error": "Invalid period",
+              "hint": "Use one of: 30d, 90d, all"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Validator not found.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "success": false,
+              "error": "Validator not found",
+              "hint": "Use validator ID (e.g., 1) or Secp address (0x...)"
+            }
+          }
+        }
+      },
+      "RateLimited": {
+        "description": "Rate limit exceeded. Staking endpoints allow 60 requests per minute per IP. Responses carry X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset; a rejection adds Retry-After.",
+        "content": {
+          "application/json": {
+            "example": {
+              "success": false,
+              "error": "Too many requests",
+              "retry_after": 42
+            }
+          }
+        }
+      },
+      "Upstream": {
+        "description": "The staking precompile could not be reached.",
+        "content": {
+          "application/json": {
+            "example": {
+              "success": false,
+              "error": "Failed to query epoch info",
+              "details": "connection refused"
+            }
+          }
+        }
+      }
+    }
+  }
+}
