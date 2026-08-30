@@ -60,6 +60,16 @@ export function renderMetrics() {
 
   r.metric("monad_api_up", "Always 1 when the API is answering.", "gauge", [["", 1]]);
 
+  // Mainnet and testnet are separate deployments whose validator IDs both start
+  // at 1, so a scrape needs to say which chain it came from without the reader
+  // having to consult the scrape config.
+  r.metric(
+    "monad_build_info",
+    "Deployment metadata. Always 1; read the labels.",
+    "gauge",
+    [[labels({ network: process.env.NETWORK || "unknown" }), 1]]
+  );
+
   // ---------- validator inventory ----------
   const counts = getValidatorCountsByStatus();
   r.metric(
