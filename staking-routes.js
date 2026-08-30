@@ -9,6 +9,7 @@ import {
   getEpochInfo,
   getLivePool,
   getValidatorSets,
+  getProposer,
 } from "./staking.js";
 import { getValidatorById, getValidatorCount, getMeasuredBlockTime } from "./db.js";
 
@@ -97,6 +98,32 @@ router.get("/pool", async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ---------- Proposer ----------
+
+// GET /monad-api/staking/proposer
+router.get("/proposer", async (req, res) => {
+  try {
+    const valId = await getProposer();
+    const v = getValidatorById(valId);
+
+    res.json({
+      success: true,
+      proposer: {
+        validator_id: valId,
+        name: v?.name || `Validator #${valId}`,
+        secp_address: v?.secp_address || null,
+        status: v?.status || "unknown",
+      },
+    });
+  } catch (err) {
+    res.status(503).json({
+      success: false,
+      error: "Failed to query current proposer",
+      details: err.message,
+    });
   }
 });
 
@@ -192,6 +219,22 @@ router.get("/validator/:valId", async (req, res) => {
         self_stake: authDelegation ? authDelegation.stake : null,
         unclaimed_rewards: authDelegation ? authDelegation.unclaimed_rewards : 0,
         auth_address: onChain.auth_address,
+        // consensus_* is what is active this epoch, snapshot_* is what takes effect
+        // next epoch. Their difference is a change that has been committed on-chain
+        // but has not activated yet.
+        consensus_stake: onChain.consensus_stake,
+        snapshot_stake: onChain.snapshot_stake,
+        consensus_commission: onChain.consensus_commission,
+        snapshot_commission: onChain.snapshot_commission,
+        pending: {
+          stake_delta: parseFloat(
+            (onChain.snapshot_stake - onChain.consensus_stake).toFixed(2)
+          ),
+          commission_change:
+            onChain.snapshot_commission !== onChain.consensus_commission
+              ? { from: onChain.consensus_commission, to: onChain.snapshot_commission }
+              : null,
+        },
       },
     });
   } catch (err) {

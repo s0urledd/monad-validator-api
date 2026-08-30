@@ -437,6 +437,55 @@ export function getCumulativeUptime(validatorId, period = "all") {
 }
 
 /**
+ * How much snapshot history exists for a validator.
+ * Used to say honestly how far back a cumulative figure actually reaches.
+ */
+export function getEpochCoverage(validatorId) {
+  return db.prepare(`
+    SELECT
+      COUNT(*) as epochs,
+      MIN(epoch) as first_epoch,
+      MAX(epoch) as last_epoch,
+      MIN(snapshot_ts) as first_ts,
+      MAX(snapshot_ts) as last_ts
+    FROM uptime_epoch_snapshots
+    WHERE validator_id = ?
+  `).get(validatorId);
+}
+
+/**
+ * Network-wide uptime per epoch.
+ *
+ * threshold is the VDP compliance line, so below_threshold is the count of
+ * validators that would have been flagged for that epoch.
+ */
+export function getNetworkUptimeByEpoch(period = "all", threshold = 98) {
+  const params = [threshold];
+  let tsFilter = "";
+
+  if (period === "30d" || period === "90d") {
+    const days = period === "30d" ? 30 : 90;
+    tsFilter = "WHERE snapshot_ts >= ?";
+    params.push(Math.floor(Date.now() / 1000) - days * 86400);
+  }
+
+  return db.prepare(`
+    SELECT
+      epoch,
+      COUNT(*) as validator_count,
+      SUM(finalized_count) as finalized,
+      SUM(timeout_count) as timeout,
+      SUM(total_events) as total,
+      SUM(CASE WHEN uptime_percent < ? THEN 1 ELSE 0 END) as below_threshold,
+      MIN(snapshot_ts) as snapshot_ts
+    FROM uptime_epoch_snapshots
+    ${tsFilter}
+    GROUP BY epoch
+    ORDER BY epoch DESC
+  `).all(...params);
+}
+
+/**
  * Get cumulative uptime for ALL validators over a period.
  */
 export function getAllCumulativeUptime(period = "all") {
