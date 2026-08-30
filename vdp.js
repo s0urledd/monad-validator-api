@@ -19,10 +19,6 @@ export const VDP_RULES = {
   commission_cap: 15,
 };
 
-// Counting weeks is the wrong test for "do we have enough history": a 90 day
-// window spans 12.86 weeks, so depending on where the boundaries fall only 11
-// or 12 completed weeks ever start inside it. What actually matters is whether
-// our records reach back past the start of the window.
 
 function weekStartTs(weekIndex) {
   return weekIndex * VDP_WEEK_SECONDS + VDP_MONDAY_ANCHOR;
@@ -30,6 +26,18 @@ function weekStartTs(weekIndex) {
 
 function toISO(ts) {
   return ts ? new Date(ts * 1000).toISOString() : null;
+}
+
+/** How many complete week buckets fall inside the strike window. */
+function expectedWeeks(windowStart, now) {
+  let idx = Math.floor((windowStart - VDP_MONDAY_ANCHOR) / VDP_WEEK_SECONDS);
+  if (weekStartTs(idx) < windowStart) idx++;
+  let count = 0;
+  while (weekStartTs(idx) + VDP_WEEK_SECONDS <= now) {
+    count++;
+    idx++;
+  }
+  return count;
 }
 
 /**
@@ -65,9 +73,10 @@ export function evaluateWeeks(rows, now = Math.floor(Date.now() / 1000)) {
  * Compliance verdict for one validator.
  *
  * Status is deliberately conservative. Three strikes is a breach no matter how
- * much history we hold, but "no strikes" over four weeks of data does not
- * establish compliance across a 13 week window, so that reports as
- * insufficient_data rather than as a clean bill of health.
+ * much history we hold, but "no strikes" over a window we only partly observed
+ * does not establish compliance, so that reports as insufficient_data rather
+ * than as a clean bill of health. A validator that leaves the active set stops
+ * producing rounds, and its silence must not read as a good record.
  */
 export function evaluateCompliance(weeks, commissionPercent, now = Math.floor(Date.now() / 1000)) {
   const windowStart = now - VDP_RULES.strike_window_days * 86400;
@@ -78,8 +87,14 @@ export function evaluateCompliance(weeks, commissionPercent, now = Math.floor(Da
   // weeks arrives newest first, so the last completed entry is the oldest.
   const completedWeeks = weeks.filter((w) => w.complete);
   const completeWeeks = completedWeeks.length;
-  const oldestComplete = completeWeeks ? completedWeeks[completeWeeks - 1] : null;
-  const sufficient = oldestComplete ? oldestComplete.week_start <= windowStart : false;
+
+  // A validator that stops participating produces no rounds, so its weeks are
+  // absent rather than bad. Reaching far enough back is therefore not the same
+  // as covering the window: count the weeks the window should hold and compare.
+  // Anything missing is unobserved, and a verdict cannot be drawn over it.
+  const weeksExpected = expectedWeeks(windowStart, now);
+  const weeksMissing = Math.max(weeksExpected - inWindow.length, 0);
+  const sufficient = weeksMissing === 0;
 
   let status;
   if (strikes >= VDP_RULES.max_strikes) {
@@ -151,9 +166,13 @@ export function evaluateCompliance(weeks, commissionPercent, now = Math.floor(Da
       weeks_available: weeks.length,
       complete_weeks: completeWeeks,
       weeks_in_window: inWindow.length,
+      weeks_expected: weeksExpected,
+      // Weeks the window should hold for which no rounds were recorded at all,
+      // which is what an inactive validator looks like.
+      weeks_missing: weeksMissing,
+      last_week_utc: completeWeeks ? completedWeeks[0].week_start_utc : null,
       window_start_utc: toISO(windowStart),
-      // True when our history reaches back past the start of the strike window,
-      // which is what makes a "no strikes" verdict meaningful.
+      // True only when every week the window should hold was actually observed.
       sufficient,
       since_utc: oldest ? oldest.week_start_utc : null,
     },
