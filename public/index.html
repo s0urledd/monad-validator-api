@@ -33,8 +33,8 @@ nav{
 nav .wrap{display:flex;align-items:center;gap:28px;height:60px}
 .brand{display:flex;align-items:center;gap:9px;font-weight:600;letter-spacing:-.01em}
 .brand .mark{
-  width:26px;height:26px;border-radius:7px;flex:none;
-  background:linear-gradient(135deg,var(--primary),var(--primary-2));
+  width:26px;height:26px;border-radius:5px;flex:none;
+  background:var(--primary-2);
   display:grid;place-items:center;font-size:13px;font-weight:700;color:#fff;
 }
 .nav-links{display:flex;gap:22px;margin-left:auto;font-size:14px;color:var(--muted)}
@@ -53,50 +53,30 @@ nav .wrap{display:flex;align-items:center;gap:28px;height:60px}
 .dot.off{background:var(--muted)}
 
 /* ---------- hero ---------- */
-header{padding:76px 0 64px;position:relative;overflow:hidden}
-header::before{
-  content:'';position:absolute;top:-320px;left:50%;transform:translateX(-50%);
-  width:900px;height:600px;pointer-events:none;
-  background:radial-gradient(ellipse at center,#6e54ff26,transparent 68%);
-}
-.hero{position:relative;display:grid;grid-template-columns:1fr 380px;gap:56px;align-items:start}
-.badge{
-  display:inline-flex;align-items:center;gap:8px;font-size:13px;
-  padding:6px 13px;border-radius:99px;color:var(--lav);
-  border:1px solid #6e54ff59;background:#6e54ff1a;margin-bottom:22px;
-}
-h1{font-size:56px;line-height:1.05;letter-spacing:-.03em;font-weight:640}
-h1 .accent{
-  background:linear-gradient(100deg,var(--primary),#a894ff);
-  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;
-}
-.lede{font-size:18px;color:var(--muted);margin-top:20px;max-width:560px}
+header{padding:64px 0 56px}
+.hero{position:relative;max-width:760px}
+h1{font-size:40px;line-height:1.15;letter-spacing:-.02em;font-weight:600}
+.lede{font-size:16.5px;color:var(--muted);margin-top:16px;max-width:600px}
 .cta{display:flex;gap:12px;margin-top:32px;flex-wrap:wrap}
 .btn{
   display:inline-flex;align-items:center;gap:8px;font-size:14px;font-weight:500;
-  padding:11px 20px;border-radius:10px;border:1px solid transparent;transition:.15s;
+  padding:11px 20px;border-radius:6px;border:1px solid transparent;transition:.15s;
 }
 .btn-primary{background:var(--primary-2);color:#fff}
 .btn-primary:hover{background:var(--primary)}
 .btn-ghost{border-color:var(--border-2);color:var(--fg);background:var(--card)}
 .btn-ghost:hover{background:var(--card-2);border-color:#ffffff33}
 
-/* live stats card */
-.stats{border:1px solid var(--border);border-radius:14px;background:var(--card);overflow:hidden}
-.stats-head{
-  display:flex;align-items:center;gap:8px;padding:13px 18px;
-  border-bottom:1px solid var(--border);font-size:11px;font-weight:600;
-  letter-spacing:.09em;text-transform:uppercase;color:var(--muted);
-}
-.stat{display:flex;justify-content:space-between;align-items:center;padding:13px 18px;font-size:14px}
-.stat+.stat{border-top:1px solid var(--border)}
-.stat .k{color:var(--muted)}
-.stat .v{font-weight:600;font-variant-numeric:tabular-nums}
-.stat .v.good{color:var(--green)}
-.stat .v.warn{color:var(--amber)}
-.stat .v.bad{color:var(--red)}
-.skel{display:inline-block;width:54px;height:13px;border-radius:4px;background:var(--card-2);animation:p 1.4s ease-in-out infinite}
-@keyframes p{0%,100%{opacity:.4}50%{opacity:.8}}
+/* metrics row */
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:32px 20px}
+.metric{display:flex;flex-direction:column;gap:2px}
+.mv{font-size:32px;font-weight:600;letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:1.15}
+.mv.good{color:var(--green)}
+.mv.warn{color:var(--amber)}
+.mv.bad{color:var(--red)}
+.ml{font-size:12.5px;color:var(--muted)}
+.note{margin-top:36px;font-size:13.5px;color:var(--muted);max-width:620px}
+.note code{font-family:var(--mono);font-size:12.5px;color:var(--lav)}
 
 /* ---------- sections ---------- */
 section{padding:64px 0;border-top:1px solid var(--border)}
@@ -107,15 +87,9 @@ section{padding:64px 0;border-top:1px solid var(--border)}
 h2{font-size:32px;letter-spacing:-.02em;font-weight:620}
 .sec-lede{color:var(--muted);margin-top:12px;max-width:640px}
 
-.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:1px;
-  background:var(--border);border:1px solid var(--border);border-radius:12px;overflow:hidden}
-.fact{background:var(--bg);padding:15px 18px;display:flex;flex-direction:column;gap:3px}
-.fk{font-size:10.5px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
-.fv{font-size:13.5px}
-
 /* code */
 .code{
-  border:1px solid var(--border);border-radius:12px;background:var(--bg-2);
+  border:1px solid var(--border);border-radius:8px;background:var(--bg-2);
   overflow:hidden;margin-top:22px;
 }
 .code-head{
@@ -136,7 +110,7 @@ pre{padding:15px;overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-h
 .ref{display:grid;grid-template-columns:236px 1fr;gap:32px;margin-top:36px;align-items:start}
 .side{position:sticky;top:78px;max-height:calc(100vh - 100px);overflow-y:auto}
 .side input{
-  width:100%;font:inherit;font-size:13px;padding:8px 12px;border-radius:9px;
+  width:100%;font:inherit;font-size:13px;padding:8px 12px;border-radius:6px;
   background:var(--card);border:1px solid var(--border);color:var(--fg);margin-bottom:16px;
 }
 .side input::placeholder{color:var(--muted)}
@@ -144,7 +118,7 @@ pre{padding:15px;overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-h
 .grp{font-size:10.5px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;
   color:var(--muted);margin:16px 0 7px}
 .side a{
-  display:flex;align-items:flex-start;gap:8px;padding:5px 9px;border-radius:7px;
+  display:flex;align-items:flex-start;gap:8px;padding:5px 9px;border-radius:5px;
   font-size:12px;color:var(--muted);font-family:var(--mono);
   line-height:1.5;word-break:break-word;
 }
@@ -158,7 +132,7 @@ pre{padding:15px;overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-h
   font-family:var(--mono);font-size:12px;color:var(--lav);
   background:var(--card-2);border-radius:4px;padding:1px 5px;
 }
-.ep{border:1px solid var(--border);border-radius:14px;background:var(--card);margin-bottom:14px;overflow:hidden}
+.ep{border:1px solid var(--border);border-radius:8px;background:var(--card);margin-bottom:14px;overflow:hidden}
 .ep-head{display:flex;align-items:center;gap:11px;padding:15px 18px;cursor:pointer;user-select:none}
 .ep-head:hover{background:var(--card-2)}
 .ep-path{font-family:var(--mono);font-size:13.5px;font-weight:500}
@@ -181,7 +155,6 @@ footer{padding:44px 0;border-top:1px solid var(--border);color:var(--muted);font
 footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 
 @media(max-width:940px){
-  .hero{grid-template-columns:1fr;gap:36px}
   .ref{grid-template-columns:1fr}
   .side{position:static;max-height:none}
   h1{font-size:40px}
@@ -207,56 +180,44 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 </nav>
 
 <header>
-  <div class="wrap hero">
-    <div>
-      <span class="badge">◆ Built on a validator, not an indexer</span>
-      <h1>Monad validator data,<br><span class="accent">measured at the source</span></h1>
-      <p class="lede">
-        Uptime, VDP compliance and on-chain staking data — served from a node that
-        actually validates. Read-only REST, no authentication, no API key.
-      </p>
-      <div class="cta">
-        <a class="btn btn-primary" href="#reference">Browse the API →</a>
-        <a class="btn btn-ghost" href="/monad-api/openapi.json">OpenAPI spec</a>
-      </div>
+  <div class="wrap">
+   <div class="hero">
+    <h1>Monad Validator API</h1>
+    <p class="lede">
+      Validator metadata, uptime history, VDP compliance and on-chain staking
+      data. Uptime is measured from a validator node's own consensus log.
+      Read-only REST, no authentication.
+    </p>
+    <div class="cta">
+      <a class="btn btn-primary" href="#reference">Reference</a>
+      <a class="btn btn-ghost" href="/monad-api/openapi.json">OpenAPI spec</a>
     </div>
-
-    <div class="stats">
-      <div class="stats-head"><span class="dot" id="s-dot"></span> Live network</div>
-      <div class="stat"><span class="k">Validators tracked</span><span class="v" id="s-total"><i class="skel"></i></span></div>
-      <div class="stat"><span class="k">Active set</span><span class="v" id="s-active"><i class="skel"></i></span></div>
-      <div class="stat"><span class="k">Current epoch</span><span class="v" id="s-epoch"><i class="skel"></i></span></div>
-      <div class="stat"><span class="k">Network uptime</span><span class="v good" id="s-uptime"><i class="skel"></i></span></div>
-      <div class="stat"><span class="k">Staking APR</span><span class="v" id="s-apr"><i class="skel"></i></span></div>
-      <div class="stat"><span class="k">VDP compliant</span><span class="v" id="s-vdp"><i class="skel"></i></span></div>
-      <div class="stat"><span class="k">Epochs indexed</span><span class="v" id="s-epochs"><i class="skel"></i></span></div>
-    </div>
+   </div>
   </div>
 </header>
 
-<section id="start">
+<section id="numbers">
   <div class="wrap">
-    <div class="facts">
-      <div class="fact"><span class="fk">Auth</span><span class="fv">None — no key, no signup</span></div>
-      <div class="fact"><span class="fk">Rate limit</span><span class="fv">60/min per IP on staking routes</span></div>
-      <div class="fact"><span class="fk">Uptime source</span><span class="fv">A validator's own consensus log</span></div>
-      <div class="fact"><span class="fk">History</span><span class="fv">Permanent per-epoch snapshots</span></div>
+    <div class="metrics">
+      <div class="metric"><span class="mv" id="s-total">—</span><span class="ml">Validators tracked</span></div>
+      <div class="metric"><span class="mv" id="s-active">—</span><span class="ml">Active set</span></div>
+      <div class="metric"><span class="mv" id="s-epoch">—</span><span class="ml">Current epoch</span></div>
+      <div class="metric"><span class="mv good" id="s-uptime">—</span><span class="ml">Network uptime, 30d</span></div>
+      <div class="metric"><span class="mv" id="s-vdp">—</span><span class="ml">VDP compliant</span></div>
+      <div class="metric"><span class="mv" id="s-epochs">—</span><span class="ml">Epochs indexed</span></div>
     </div>
-
-    <div class="code">
-      <div class="code-head"><span>Try it</span><button class="copy" data-copy="curl">Copy</button></div>
-      <pre id="curl"></pre>
-    </div>
+    <p class="note">
+      Staking routes allow 60 requests per minute per IP and return
+      <code>X-RateLimit-*</code> headers. Validator routes are unmetered.
+    </p>
   </div>
 </section>
 
 <section id="reference">
   <div class="wrap">
-    <div class="sec-label">Reference</div>
-    <h2>Every endpoint</h2>
+    <h2>Endpoints</h2>
     <p class="sec-lede">
-      Generated from the OpenAPI document this service publishes, so it cannot drift
-      from what the server actually serves.
+      Generated from the OpenAPI document this service publishes.
     </p>
 
     <div class="ref">
@@ -306,13 +267,7 @@ function hlJson(obj){
     .replace(/: (true|false|null)/g, ': <span class="c-lit">$1</span>');
 }
 
-function hlCurl(url){
-  return '<span class="c-cmd">curl</span> <span class="c-flag">-s</span> '
-       + '<span class="c-url">' + esc(url) + '</span> \\\n  | <span class="c-cmd">jq</span>';
-}
 
-document.getElementById('curl').innerHTML =
-  hlCurl(ORIGIN + '/monad-api/validators/uptime?period=30d&limit=3');
 
 
 document.querySelectorAll('.copy').forEach(b => b.onclick = () => {
@@ -342,7 +297,6 @@ async function loadStats(){
     set('s-total', num(h.validators_loaded));
   } catch {
     document.getElementById('live-dot').className = 'dot off';
-    document.getElementById('s-dot').className = 'dot off';
     document.getElementById('live-label').textContent = 'offline';
     document.querySelectorAll('.stats .v').forEach(e => e.textContent = '—');
     return;
