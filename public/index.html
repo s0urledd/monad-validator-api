@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Monad Validator API</title>
+<title>Monad Validator &amp; Staking API</title>
 <meta name="description" content="Validator metadata, uptime history, VDP compliance and on-chain staking data for Monad.">
 <meta name="theme-color" content="#0e091c">
 <style>
@@ -66,17 +66,6 @@ h1{font-size:40px;line-height:1.15;letter-spacing:-.02em;font-weight:600}
 .btn-primary:hover{background:var(--primary)}
 .btn-ghost{border-color:var(--border-2);color:var(--fg);background:var(--card)}
 .btn-ghost:hover{background:var(--card-2);border-color:#ffffff33}
-
-/* metrics row */
-.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:32px 20px}
-.metric{display:flex;flex-direction:column;gap:2px}
-.mv{font-size:32px;font-weight:600;letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:1.15}
-.mv.good{color:var(--green)}
-.mv.warn{color:var(--amber)}
-.mv.bad{color:var(--red)}
-.ml{font-size:12.5px;color:var(--muted)}
-.note{margin-top:36px;font-size:13.5px;color:var(--muted);max-width:620px}
-.note code{font-family:var(--mono);font-size:12.5px;color:var(--lav)}
 
 /* ---------- sections ---------- */
 section{padding:64px 0;border-top:1px solid var(--border)}
@@ -166,7 +155,7 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 
 <nav>
   <div class="wrap">
-    <a href="#" class="brand"><span class="mark">M</span> Validator API</a>
+    <a href="#" class="brand"><span class="mark">M</span> Validator &amp; Staking API</a>
     <div class="nav-links">
       <a href="#reference">Reference</a>
       <a href="/monad-api/openapi.json">OpenAPI</a>
@@ -182,7 +171,7 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 <header>
   <div class="wrap">
    <div class="hero">
-    <h1>Monad Validator API</h1>
+    <h1>Monad Validator &amp; Staking API</h1>
     <p class="lede">
       Validator metadata, uptime history, VDP compliance and on-chain staking
       data. Uptime is measured from a validator node's own consensus log.
@@ -195,23 +184,6 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
    </div>
   </div>
 </header>
-
-<section id="numbers">
-  <div class="wrap">
-    <div class="metrics">
-      <div class="metric"><span class="mv" id="s-total">—</span><span class="ml">Validators tracked</span></div>
-      <div class="metric"><span class="mv" id="s-active">—</span><span class="ml">Active set</span></div>
-      <div class="metric"><span class="mv" id="s-epoch">—</span><span class="ml">Current epoch</span></div>
-      <div class="metric"><span class="mv good" id="s-uptime">—</span><span class="ml">Network uptime, 30d</span></div>
-      <div class="metric"><span class="mv" id="s-vdp">—</span><span class="ml">VDP compliant</span></div>
-      <div class="metric"><span class="mv" id="s-epochs">—</span><span class="ml">Epochs indexed</span></div>
-    </div>
-    <p class="note">
-      Staking routes allow 60 requests per minute per IP and return
-      <code>X-RateLimit-*</code> headers. Validator routes are unmetered.
-    </p>
-  </div>
-</section>
 
 <section id="reference">
   <div class="wrap">
@@ -275,54 +247,20 @@ document.querySelectorAll('.copy').forEach(b => b.onclick = () => {
   b.textContent = 'Copied'; setTimeout(() => b.textContent = 'Copy', 1400);
 });
 
-/* ---------------- live stats ---------------- */
-const set = (id, v, cls) => {
-  const el = document.getElementById(id);
-  if (!el) return;
-  el.textContent = v;
-  if (cls) el.className = 'v ' + cls;
-};
-const num = n => n == null ? '—' : n.toLocaleString('en-US');
 
-async function get(p){
-  const r = await fetch(ORIGIN + p, { headers: { accept: 'application/json' } });
+async function get(path){
+  const r = await fetch(ORIGIN + path, { headers: { accept: 'application/json' } });
   if (!r.ok) throw new Error(r.status);
   return r.json();
 }
 
-async function loadStats(){
-  try {
-    const h = await get('/health');
-    document.getElementById('live-label').textContent = 'live';
-    set('s-total', num(h.validators_loaded));
-  } catch {
-    document.getElementById('live-dot').className = 'dot off';
-    document.getElementById('live-label').textContent = 'offline';
-    document.querySelectorAll('.stats .v').forEach(e => e.textContent = '—');
-    return;
-  }
-
-  get('/monad-api/staking/pool').then(p => {
-    set('s-active', num(p.active_validators));
-    set('s-epoch', num(p.epoch));
-    const apr = p.calculated_apr ?? p.estimated_apr;
-    set('s-apr', apr == null ? '—' : apr.toFixed(2) + '%');
-  }).catch(()=>{});
-
-  get('/monad-api/validators/network/uptime?period=30d').then(n => {
-    const u = n.summary?.uptime_percent;
-    set('s-uptime', u == null ? '—' : u.toFixed(2) + '%', u >= 99 ? 'good' : 'warn');
-    set('s-epochs', num(n.summary?.epochs));
-  }).catch(()=>{});
-
-  get('/monad-api/validators/vdp').then(v => {
-    const s = v.summary || {};
-    const ok = s.compliant || 0, tot = v.count || 0;
-    const pct = tot ? (ok / tot) * 100 : 0;
-    set('s-vdp', ok + ' / ' + tot, pct >= 90 ? 'good' : pct >= 70 ? 'warn' : 'bad');
-  }).catch(()=>{});
-}
-loadStats();
+/* Health drives only the status pill in the nav. */
+get('/health').then(() => {
+  document.getElementById('live-label').textContent = 'live';
+}).catch(() => {
+  document.getElementById('live-dot').className = 'dot off';
+  document.getElementById('live-label').textContent = 'offline';
+});
 
 /* ---------------- reference, rendered from the spec ---------------- */
 const METHOD = 'get';
