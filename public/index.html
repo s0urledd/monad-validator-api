@@ -137,6 +137,33 @@ td code{font-family:var(--mono);font-size:12px;color:var(--lav)}
 .req{font-size:10px;color:var(--red);margin-left:5px}
 .enum{font-family:var(--mono);font-size:11.5px;color:var(--primary)}
 
+/* try it */
+.try{margin-top:18px;border-top:1px solid var(--border);padding-top:16px}
+.try-row{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end}
+.field{display:flex;flex-direction:column;gap:4px}
+.field label{font-size:10.5px;color:var(--muted);font-family:var(--mono)}
+.field input,.field select{
+  font:inherit;font-family:var(--mono);font-size:12.5px;padding:6px 9px;
+  border-radius:5px;background:var(--bg-2);border:1px solid var(--border);
+  color:var(--fg);min-width:110px;
+}
+.field input:focus,.field select:focus{outline:none;border-color:#6e54ff73}
+.send{
+  font:inherit;font-size:13px;font-weight:500;cursor:pointer;color:#fff;
+  background:var(--primary-2);border:none;border-radius:5px;padding:7px 16px;
+}
+.send:hover{background:var(--primary)}
+.send:disabled{opacity:.55;cursor:default}
+.try-meta{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-top:12px}
+.st{font-weight:700;padding:1px 6px;border-radius:4px;margin-right:8px}
+.st.ok{background:#4ade8026;color:var(--green)}
+.st.err{background:#ef444426;color:var(--red)}
+.try-out{
+  margin-top:8px;border:1px solid var(--border);border-radius:6px;
+  background:var(--bg-2);max-height:340px;overflow:auto;
+}
+.try-out pre{font-size:12px}
+
 footer{padding:44px 0;border-top:1px solid var(--border);color:var(--muted);font-size:13px}
 footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 
@@ -223,10 +250,10 @@ const ORIGIN = location.origin;
 })();
 
 /* ---------------- syntax highlighting ---------------- */
-const esc = s => s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const esc = v => String(v ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
 // Descriptions in the spec use backticks for identifiers; render them as code.
-const ticks = s => esc(s).replace(/`([^`]+)`/g, '<code>$1</code>');
+const ticks = v => esc(v).replace(/`([^`]+)`/g, '<code>$1</code>');
 
 function hlJson(obj){
   return esc(JSON.stringify(obj, null, 2))
@@ -281,6 +308,80 @@ function paramRows(params){
   }).join('');
   return '<h4>Parameters</h4><table><thead><tr><th>Name</th><th>Type</th><th>Description</th></tr></thead><tbody>'
     + rows + '</tbody></table>';
+}
+
+// Inputs for every parameter, so a request can be built and sent from here.
+// The page is served by the API itself, so this is same-origin and needs no
+// proxy or key.
+function tryBlock(path, params){
+  const fields = (params || []).map(p => {
+    const s = p.schema || {};
+    const def = p.example ?? s.default ?? (s.enum ? s.enum[0] : '');
+    const holder = p.in === 'path' ? '1' : (s.type === 'integer' ? '123' : '');
+    const input = s.enum
+      ? `<select data-p="${esc(p.name)}" data-in="${p.in}">`
+        + (p.required ? '' : '<option value=""></option>')
+        + s.enum.map(v => `<option${v === def ? ' selected' : ''}>${esc(v)}</option>`).join('')
+        + '</select>'
+      : `<input data-p="${esc(p.name)}" data-in="${p.in}" value="${esc(p.in === 'path' ? (def || '1') : '')}" placeholder="${esc(holder)}">`;
+    return `<div class="field"><label>${esc(p.name)}${p.required ? ' *' : ''}</label>${input}</div>`;
+  }).join('');
+
+  return '<div class="try" data-path="' + esc(path) + '">'
+    + '<h4>Try it</h4>'
+    + '<div class="try-row">' + fields
+    + '<button class="send">Send</button></div>'
+    + '<div class="try-meta" hidden></div>'
+    + '<div class="try-out" hidden><pre></pre></div>'
+    + '</div>';
+}
+
+async function runTry(box){
+  const btn = box.querySelector('.send');
+  const meta = box.querySelector('.try-meta');
+  const out = box.querySelector('.try-out');
+  const pre = out.querySelector('pre');
+
+  let url = box.dataset.path;
+  const query = [];
+  for (const el of box.querySelectorAll('[data-p]')) {
+    const v = el.value.trim();
+    if (el.dataset.in === 'path') {
+      url = url.replace(`{${el.dataset.p}}`, encodeURIComponent(v || '1'));
+    } else if (v) {
+      query.push(encodeURIComponent(el.dataset.p) + '=' + encodeURIComponent(v));
+    }
+  }
+  if (query.length) url += '?' + query.join('&');
+
+  btn.disabled = true;
+  meta.hidden = false;
+  meta.textContent = 'Sending…';
+
+  const t0 = performance.now();
+  try {
+    const r = await fetch(ORIGIN + url, { headers: { accept: 'application/json' } });
+    const ms = Math.round(performance.now() - t0);
+    const body = await r.text();
+    const ct = r.headers.get('content-type') || '';
+
+    meta.innerHTML = `<span class="st ${r.ok ? 'ok' : 'err'}">${r.status}</span>`
+      + esc(url) + `  ·  ${ms} ms  ·  ${body.length.toLocaleString('en-US')} bytes`;
+
+    out.hidden = false;
+    if (ct.includes('json')) {
+      try { pre.innerHTML = hlJson(JSON.parse(body)); }
+      catch { pre.textContent = body; }
+    } else {
+      // /metrics answers text/plain
+      pre.textContent = body.length > 40000 ? body.slice(0, 40000) + '\n…' : body;
+    }
+  } catch (err) {
+    meta.innerHTML = '<span class="st err">error</span>' + esc(String(err.message || err));
+    out.hidden = true;
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 function responseBlock(responses){
@@ -345,6 +446,7 @@ function render(spec){
         + '<div class="ep-body">'
         + (op.description ? '<div class="ep-desc">' + ticks(op.description) + '</div>' : '')
         + paramRows(op.parameters)
+        + tryBlock(path, op.parameters)
         + responseBlock(op.responses)
         + '</div></div>';
     }
@@ -355,6 +457,13 @@ function render(spec){
 
   document.querySelectorAll('.ep-head').forEach(h =>
     h.onclick = () => h.parentElement.classList.toggle('open'));
+
+  document.querySelectorAll('.try .send').forEach(b =>
+    b.onclick = () => runTry(b.closest('.try')));
+
+  // Enter in any field sends, which is how a form is expected to behave.
+  document.querySelectorAll('.try input').forEach(i =>
+    i.onkeydown = e => { if (e.key === 'Enter') runTry(i.closest('.try')); });
 
   // deep link opens the target
   const openHash = () => {
@@ -377,10 +486,24 @@ function render(spec){
   };
 }
 
-get('/monad-api/openapi.json').then(render).catch(() => {
-  document.getElementById('eps').innerHTML =
-    '<div class="ep"><div class="ep-head"><span class="ep-sum">Could not load openapi.json</span></div></div>';
-});
+// Kept separate: a failure to fetch the spec and a failure to render it are
+// different faults, and reporting the second as the first hides real bugs.
+get('/monad-api/openapi.json')
+  .then(spec => {
+    try {
+      render(spec);
+    } catch (err) {
+      console.error('Reference render failed:', err);
+      document.getElementById('eps').innerHTML =
+        '<div class="ep"><div class="ep-head"><span class="ep-sum">Could not render the reference: '
+        + esc(err.message) + '</span></div></div>';
+    }
+  })
+  .catch(err => {
+    document.getElementById('eps').innerHTML =
+      '<div class="ep"><div class="ep-head"><span class="ep-sum">Could not load openapi.json ('
+      + esc(err.message) + ')</span></div></div>';
+  });
 </script>
 </body>
 </html>

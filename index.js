@@ -56,6 +56,17 @@ function endpointListFromSpec() {
 
 // ---------- Express Setup ----------
 const app = express();
+
+// Behind nginx every connection arrives from the loopback address, so without
+// this req.ip is 127.0.0.1 for everyone and the rate limiter degrades into one
+// shared bucket that a single caller can exhaust for the whole internet.
+//
+// Trusting only loopback rather than `true` matters: `true` accepts whatever
+// X-Forwarded-For a client sends, which lets anyone forge an address and slip
+// the limit entirely. Restricting trust to the local proxy means the header is
+// honoured only when nginx set it.
+app.set("trust proxy", process.env.TRUST_PROXY || "loopback");
+
 app.use(cors());
 app.use(express.json());
 
