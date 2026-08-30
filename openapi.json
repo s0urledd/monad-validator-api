@@ -78,6 +78,26 @@
         }
       }
     },
+    "/metrics": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Prometheus metrics",
+        "description": "Scrape target in the Prometheus text exposition format. Every series is read from SQLite, so a scrape never waits on the node and is not rate limited.\n\nCovers per-validator uptime, stake, commission and VDP strikes, plus network totals, indexer progress and the measured block time.",
+        "operationId": "metrics",
+        "responses": {
+          "200": {
+            "description": "Metrics in text exposition format.",
+            "content": {
+              "text/plain": {
+                "example": "monad_api_up 1\nmonad_validators{status=\"active\"} 200\nmonad_validator_uptime_percent{id=\"1\",name=\"Example\",status=\"active\"} 99.95\nmonad_validator_vdp_strikes{id=\"1\",name=\"Example\"} 0\nmonad_network_uptime_percent 99.77\nmonad_measured_block_time_seconds 0.30264\n"
+              }
+            }
+          }
+        }
+      }
+    },
     "/monad-api/validators": {
       "get": {
         "tags": [

@@ -6,6 +6,7 @@
 <title>Monad Validator &amp; Staking API</title>
 <meta name="description" content="Validator metadata, uptime history, VDP compliance and on-chain staking data for Monad.">
 <meta name="theme-color" content="#0e091c">
+<link rel="icon" type="image/png" href="/huginn-logo.png">
 <style>
 :root{
   --bg:#0e091c; --bg-2:#0a0617; --card:#ffffff08; --card-2:#ffffff0d;
@@ -32,11 +33,7 @@ nav{
 }
 nav .wrap{display:flex;align-items:center;gap:28px;height:60px}
 .brand{display:flex;align-items:center;gap:9px;font-weight:600;letter-spacing:-.01em}
-.brand .mark{
-  width:26px;height:26px;border-radius:5px;flex:none;
-  background:var(--primary-2);
-  display:grid;place-items:center;font-size:13px;font-weight:700;color:#fff;
-}
+.brand .mark{width:24px;height:24px;flex:none;display:block}
 .nav-links{display:flex;gap:22px;margin-left:auto;font-size:14px;color:var(--muted)}
 .nav-links a:hover{color:var(--fg)}
 .net{display:flex;gap:2px;padding:3px;border-radius:99px;background:var(--card);
@@ -155,7 +152,7 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 
 <nav>
   <div class="wrap">
-    <a href="#" class="brand"><span class="mark">M</span> Validator &amp; Staking API</a>
+    <a href="#" class="brand"><img class="mark" src="/huginn-logo.png" alt="Huginn"> Validator &amp; Staking API</a>
     <div class="nav-links">
       <a href="#reference">Reference</a>
       <a href="/monad-api/openapi.json">OpenAPI</a>

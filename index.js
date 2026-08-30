@@ -12,6 +12,7 @@ import stakingRoutes from "./staking-routes.js";
 import { startPeriodicSync } from "./github-sync.js";
 import { startStatusSync } from "./status-sync.js";
 import { startEventIndexer } from "./event-indexer.js";
+import { renderMetrics } from "./metrics.js";
 import { getValidatorCount } from "./db.js";
 import { rateLimit } from "./rate-limit.js";
 
@@ -77,6 +78,18 @@ app.get("/health", (req, res) => {
     timestamp: new Date().toISOString(),
     validators_loaded: getValidatorCount()
   });
+});
+
+// Prometheus scrape target. Kept at the root under its conventional name, and
+// outside the staking rate limiter, since a scraper hits it every 15-30s.
+app.get("/metrics", (req, res) => {
+  try {
+    res.set("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
+    res.send(renderMetrics());
+  } catch (err) {
+    log("error", "Metrics render failed:", err.message);
+    res.status(500).type("text/plain").send("# metrics unavailable\n");
+  }
 });
 
 // OpenAPI document
