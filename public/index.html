@@ -102,15 +102,11 @@ section{padding:64px 0;border-top:1px solid var(--border)}
 h2{font-size:32px;letter-spacing:-.02em;font-weight:620}
 .sec-lede{color:var(--muted);margin-top:12px;max-width:640px}
 
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(258px,1fr));gap:16px;margin-top:36px}
-.feat{border:1px solid var(--border);border-radius:14px;background:var(--card);padding:22px;transition:.15s}
-.feat:hover{border-color:#6e54ff59;background:var(--card-2)}
-.feat .ico{
-  width:34px;height:34px;border-radius:9px;display:grid;place-items:center;
-  background:#6e54ff26;border:1px solid #6e54ff59;margin-bottom:14px;font-size:16px;
-}
-.feat h3{font-size:15px;font-weight:600;margin-bottom:7px}
-.feat p{font-size:13.5px;color:var(--muted);line-height:1.62}
+.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:1px;
+  background:var(--border);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.fact{background:var(--bg);padding:15px 18px;display:flex;flex-direction:column;gap:3px}
+.fk{font-size:10.5px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+.fv{font-size:13.5px}
 
 /* code */
 .code{
@@ -194,8 +190,6 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
   <div class="wrap">
     <a href="#" class="brand"><span class="mark">M</span> Validator API</a>
     <div class="nav-links">
-      <a href="#why">Why</a>
-      <a href="#start">Quick start</a>
       <a href="#reference">Reference</a>
       <a href="/monad-api/openapi.json">OpenAPI</a>
     </div>
@@ -231,76 +225,18 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
   </div>
 </header>
 
-<section id="why">
-  <div class="wrap">
-    <div class="sec-label">What this has that others don't</div>
-    <h2>Data nobody else publishes</h2>
-    <p class="sec-lede">
-      Most Monad tooling reads the chain. This reads a validator's own consensus log,
-      which is the only place block authorship appears.
-    </p>
-
-    <div class="grid">
-      <div class="feat">
-        <div class="ico">◈</div>
-        <h3>VDP compliance</h3>
-        <p>Weekly uptime against the 98% line, with strike counts inside the rolling
-        3-month window. The Foundation publishes no uptime API, so operators cannot
-        otherwise verify their own standing.</p>
-      </div>
-      <div class="feat">
-        <div class="ico">◉</div>
-        <h3>Uptime that outlives the window</h3>
-        <p>Raw rounds roll over after 48 hours. Permanent per-epoch snapshots keep
-        30-day, 90-day and all-time figures long after the events are gone.</p>
-      </div>
-      <div class="feat">
-        <div class="ico">◐</div>
-        <h3>Changes before they land</h3>
-        <p>Commission and stake changes are committed on-chain an epoch before they
-        activate. Both values are exposed, so a commission rise is visible while it
-        is still pending.</p>
-      </div>
-      <div class="feat">
-        <div class="ico">◇</div>
-        <h3>An event log the chain doesn't keep</h3>
-        <p>Delegations, withdrawals and commission edits are indexed as they are
-        emitted. The chain keeps no queryable history, so anything not captured
-        live is unrecoverable.</p>
-      </div>
-      <div class="feat">
-        <div class="ico">⬡</div>
-        <h3>Set transitions</h3>
-        <p>Who enters the active set next epoch, who leaves, and who is eligible but
-        below the top-200 cut — derived from all three validator sets.</p>
-      </div>
-      <div class="feat">
-        <div class="ico">≡</div>
-        <h3>APR you can audit</h3>
-        <p>Two figures, not one: the yield the documented block time implies, and the
-        yield the measured block time gives. Every input is returned so the number
-        can be recomputed.</p>
-      </div>
-    </div>
-  </div>
-</section>
-
 <section id="start">
   <div class="wrap">
-    <div class="sec-label">Quick start</div>
-    <h2>One request, no key</h2>
-    <p class="sec-lede">
-      Every endpoint is a GET. Staking routes allow 60 requests per minute per IP and
-      return standard rate-limit headers; validator routes are unmetered.
-    </p>
+    <div class="facts">
+      <div class="fact"><span class="fk">Auth</span><span class="fv">None — no key, no signup</span></div>
+      <div class="fact"><span class="fk">Rate limit</span><span class="fv">60/min per IP on staking routes</span></div>
+      <div class="fact"><span class="fk">Uptime source</span><span class="fv">A validator's own consensus log</span></div>
+      <div class="fact"><span class="fk">History</span><span class="fv">Permanent per-epoch snapshots</span></div>
+    </div>
 
     <div class="code">
-      <div class="code-head"><span>curl</span><button class="copy" data-copy="curl">Copy</button></div>
+      <div class="code-head"><span>Try it</span><button class="copy" data-copy="curl">Copy</button></div>
       <pre id="curl"></pre>
-    </div>
-    <div class="code">
-      <div class="code-head"><span>Response</span><button class="copy" data-copy="resp">Copy</button></div>
-      <pre id="resp"></pre>
     </div>
   </div>
 </section>
@@ -356,14 +292,6 @@ function hlCurl(url){
 document.getElementById('curl').innerHTML =
   hlCurl(ORIGIN + '/monad-api/validators/uptime?period=30d&limit=3');
 
-document.getElementById('resp').innerHTML = hlJson({
-  success: true, period: "30d", count: 3, total: 245,
-  validators: [{
-    validator_id: 1, validator_name: "Monad Foundation - cs-arn-001",
-    status: "active", finalized_count: 393732, timeout_count: 101,
-    total_events: 393833, uptime_percent: 99.97
-  }]
-});
 
 document.querySelectorAll('.copy').forEach(b => b.onclick = () => {
   navigator.clipboard.writeText(document.getElementById(b.dataset.copy).textContent);
