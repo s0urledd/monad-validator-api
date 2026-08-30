@@ -301,6 +301,40 @@ export function getStakingPool() {
 }
 
 // ---------- Epoch Snapshots ----------
+
+// Every BOUNDARY_BLOCK_PERIOD blocks is an epoch boundary.
+export const BOUNDARY_BLOCK_PERIOD = 50000;
+
+/**
+ * Measure the real block time from observed epoch snapshot timestamps.
+ *
+ * Snapshots are written at epoch transitions, so the gap between two snapshots
+ * spans (epochDiff * BOUNDARY_BLOCK_PERIOD) blocks. Averaging over several
+ * epochs smooths out the epoch watcher's polling jitter.
+ *
+ * Returns seconds-per-block, or null when there aren't enough snapshots yet.
+ */
+export function getMeasuredBlockTime(epochSpan = 12) {
+  const rows = db.prepare(`
+    SELECT epoch, MIN(snapshot_ts) as ts
+    FROM uptime_epoch_snapshots
+    GROUP BY epoch
+    ORDER BY epoch DESC
+    LIMIT ?
+  `).all(epochSpan + 1);
+
+  if (rows.length < 2) return null;
+
+  const newest = rows[0];
+  const oldest = rows[rows.length - 1];
+  const epochsSpanned = newest.epoch - oldest.epoch;
+  const secondsSpanned = newest.ts - oldest.ts;
+
+  if (epochsSpanned <= 0 || secondsSpanned <= 0) return null;
+
+  return secondsSpanned / (epochsSpanned * BOUNDARY_BLOCK_PERIOD);
+}
+
 export function saveEpochSnapshotsBatch(snapshots) {
   const stmt = db.prepare(`
     INSERT INTO uptime_epoch_snapshots (validator_id, secp_address, epoch, finalized_count, timeout_count, total_events, uptime_percent)
@@ -400,6 +434,55 @@ export function getCumulativeUptime(validatorId, period = "all") {
     total: row.total,
     uptime_percent: parseFloat(((row.finalized / row.total) * 100).toFixed(2)),
   };
+}
+
+/**
+ * How much snapshot history exists for a validator.
+ * Used to say honestly how far back a cumulative figure actually reaches.
+ */
+export function getEpochCoverage(validatorId) {
+  return db.prepare(`
+    SELECT
+      COUNT(*) as epochs,
+      MIN(epoch) as first_epoch,
+      MAX(epoch) as last_epoch,
+      MIN(snapshot_ts) as first_ts,
+      MAX(snapshot_ts) as last_ts
+    FROM uptime_epoch_snapshots
+    WHERE validator_id = ?
+  `).get(validatorId);
+}
+
+/**
+ * Network-wide uptime per epoch.
+ *
+ * threshold is the VDP compliance line, so below_threshold is the count of
+ * validators that would have been flagged for that epoch.
+ */
+export function getNetworkUptimeByEpoch(period = "all", threshold = 98) {
+  const params = [threshold];
+  let tsFilter = "";
+
+  if (period === "30d" || period === "90d") {
+    const days = period === "30d" ? 30 : 90;
+    tsFilter = "WHERE snapshot_ts >= ?";
+    params.push(Math.floor(Date.now() / 1000) - days * 86400);
+  }
+
+  return db.prepare(`
+    SELECT
+      epoch,
+      COUNT(*) as validator_count,
+      SUM(finalized_count) as finalized,
+      SUM(timeout_count) as timeout,
+      SUM(total_events) as total,
+      SUM(CASE WHEN uptime_percent < ? THEN 1 ELSE 0 END) as below_threshold,
+      MIN(snapshot_ts) as snapshot_ts
+    FROM uptime_epoch_snapshots
+    ${tsFilter}
+    GROUP BY epoch
+    ORDER BY epoch DESC
+  `).all(...params);
 }
 
 /**

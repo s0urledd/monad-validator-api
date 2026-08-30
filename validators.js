@@ -6,10 +6,24 @@ import {
   getAllValidators,
   getUptimeStats,
   getRecentEvents,
-  getValidatorCount, getLastFinalizedHeight
+  getValidatorCount, getLastFinalizedHeight,
+  getCumulativeUptime,
+  getAllCumulativeUptime,
+  getEpochCoverage,
+  getNetworkUptimeByEpoch,
+  getValidatorCountsByStatus
 } from "./db.js";
 
 const router = Router();
+
+const CUMULATIVE_PERIODS = ["30d", "90d", "all"];
+
+// VDP requires uptime above 98%.
+const UPTIME_THRESHOLD = 98;
+
+// A validator finalizing rounds emits events constantly, so a gap this long
+// means it stopped being seen rather than that it merely had a quiet spell.
+const STALE_AFTER_SECONDS = 900;
 
 // ---------- Helpers ----------
 function toISO(epoch) {
@@ -42,6 +56,9 @@ function formatValidator(v) {
     ...(extra.telegram && { telegram: extra.telegram }),
     status: v.status || "unknown",
     stake: v.stake_wei ? toMON(v.stake_wei) : null,
+    // Active this epoch vs active next epoch — synced but never surfaced before.
+    consensus_stake: v.consensus_stake_wei ? toMON(v.consensus_stake_wei) : null,
+    snapshot_stake: v.snapshot_stake_wei ? toMON(v.snapshot_stake_wei) : null,
     commission: v.commission_raw ? parseFloat((Number(v.commission_raw) / 1e18 * 100).toFixed(2)) : null,
     unclaimed_rewards: v.unclaimed_rewards_wei ? toMON(v.unclaimed_rewards_wei) : null,
     updated_at: toISO(Math.max(v.updated_at || 0, v.status_updated_at || 0) || null)
@@ -86,9 +103,16 @@ router.get("/", (req, res) => {
 router.get("/stats", (req, res) => {
   try {
     const count = getValidatorCount();
+    const byStatus = getValidatorCountsByStatus();
     res.json({
       success: true,
       total_validators: count,
+      by_status: {
+        active: byStatus.active || 0,
+        pending: byStatus.pending || 0,
+        inactive: byStatus.inactive || 0,
+        unknown: byStatus.unknown || 0
+      },
       api_version: "1.0.0"
     });
   } catch (err) {
@@ -97,11 +121,14 @@ router.get("/stats", (req, res) => {
 });
 
 // GET /monad-api/validators/uptime/:idOrAddress
+// ?period=30d|90d|all  -> cumulative, from permanent epoch snapshots
+// ?window=1-168        -> rolling window over raw events (default)
 router.get("/uptime/:idOrAddress", (req, res) => {
   try {
     const { idOrAddress } = req.params;
+    const period = req.query.period;
     const windowHours = Math.min(Math.max(Number(req.query.window) || 24, 1), 168);
-    
+
     const validator = resolveValidator(idOrAddress);
     if (!validator) {
       return res.status(404).json({
@@ -110,7 +137,32 @@ router.get("/uptime/:idOrAddress", (req, res) => {
         hint: "Use validator ID (e.g., 1) or Secp address (0x...)"
       });
     }
-    
+
+    if (period) {
+      if (!CUMULATIVE_PERIODS.includes(period)) {
+        return res.status(400).json({
+          success: false,
+          error: "Invalid period",
+          hint: `Use one of: ${CUMULATIVE_PERIODS.join(", ")}`
+        });
+      }
+      const cumulative = getCumulativeUptime(validator.id, period);
+      return res.json({
+        success: true,
+        period,
+        uptime: {
+          validator_id: validator.id,
+          validator_name: validator.name,
+          secp_address: validator.secp_address,
+          status: validator.status || "unknown",
+          finalized_count: cumulative.finalized,
+          timeout_count: cumulative.timeout,
+          total_events: cumulative.total,
+          uptime_percent: cumulative.uptime_percent
+        }
+      });
+    }
+
     const stats = getUptimeStats(validator.id, windowHours);
     const recentEvents = getRecentEvents(validator.id, 1);
     const lastEvent = recentEvents.length > 0 ? recentEvents[0] : null;
@@ -158,11 +210,60 @@ router.get("/uptime/:idOrAddress/history", (req, res) => {
 });
 
 // GET /monad-api/validators/uptime
+// ?period=30d|90d|all  -> cumulative, from permanent epoch snapshots
+// ?window=1-168        -> rolling window over raw events (default)
 router.get("/uptime", (req, res) => {
   try {
+    const period = req.query.period;
     const windowHours = Math.min(Math.max(Number(req.query.window) || 24, 1), 168);
     const sortBy = req.query.sort || "uptime";
-    
+
+    if (period) {
+      if (!CUMULATIVE_PERIODS.includes(period)) {
+        return res.status(400).json({
+          success: false,
+          error: "Invalid period",
+          hint: `Use one of: ${CUMULATIVE_PERIODS.join(", ")}`
+        });
+      }
+
+      const byId = new Map(getAllValidators().map((v) => [v.id, v]));
+      let rows = getAllCumulativeUptime(period).map((r) => {
+        const v = byId.get(r.validator_id);
+        return {
+          validator_id: r.validator_id,
+          validator_name: v?.name || `Validator #${r.validator_id}`,
+          secp_address: r.secp_address,
+          status: v?.status || "unknown",
+          finalized_count: r.finalized,
+          timeout_count: r.timeout,
+          total_events: r.total,
+          uptime_percent: r.uptime_percent
+        };
+      });
+
+      if (sortBy === "id") {
+        rows.sort((a, b) => a.validator_id - b.validator_id);
+      } else {
+        rows.sort((a, b) => b.uptime_percent - a.uptime_percent);
+      }
+
+      // Sorted by uptime and capped, this is the leaderboard.
+      const total = rows.length;
+      if (req.query.limit) {
+        const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 500);
+        rows = rows.slice(0, limit);
+      }
+
+      return res.json({
+        success: true,
+        period,
+        count: rows.length,
+        total,
+        validators: rows
+      });
+    }
+
     const validators = getAllValidators();
     let results = validators.map(v => {
       const stats = getUptimeStats(v.id, windowHours);
@@ -182,6 +283,124 @@ router.get("/uptime", (req, res) => {
       window_hours: windowHours,
       count: results.length,
       validators: results
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /monad-api/validators/network/uptime
+// Network-wide uptime per epoch, plus how many validators fell below the
+// VDP threshold in each one.
+router.get("/network/uptime", (req, res) => {
+  try {
+    const period = req.query.period || "all";
+    if (!CUMULATIVE_PERIODS.includes(period)) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid period",
+        hint: `Use one of: ${CUMULATIVE_PERIODS.join(", ")}`
+      });
+    }
+
+    const epochs = getNetworkUptimeByEpoch(period, UPTIME_THRESHOLD);
+
+    let finalized = 0;
+    let timeout = 0;
+    for (const e of epochs) {
+      finalized += e.finalized;
+      timeout += e.timeout;
+    }
+    const total = finalized + timeout;
+
+    res.json({
+      success: true,
+      period,
+      threshold: UPTIME_THRESHOLD,
+      summary: {
+        epochs: epochs.length,
+        finalized_count: finalized,
+        timeout_count: timeout,
+        total_events: total,
+        uptime_percent: total > 0 ? parseFloat(((finalized / total) * 100).toFixed(2)) : 0
+      },
+      epochs: epochs.map(e => ({
+        epoch: e.epoch,
+        validator_count: e.validator_count,
+        finalized_count: e.finalized,
+        timeout_count: e.timeout,
+        total_events: e.total,
+        uptime_percent: e.total > 0
+          ? parseFloat(((e.finalized / e.total) * 100).toFixed(2))
+          : 0,
+        below_threshold: e.below_threshold,
+        snapshot_ts: e.snapshot_ts,
+        snapshot_utc: toISO(e.snapshot_ts)
+      }))
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /monad-api/validators/:idOrAddress/health
+// Compact status for monitoring and alerting.
+router.get("/:idOrAddress/health", (req, res) => {
+  try {
+    const { idOrAddress } = req.params;
+    const validator = resolveValidator(idOrAddress);
+    if (!validator) {
+      return res.status(404).json({
+        success: false,
+        error: "Validator not found",
+        hint: "Use validator ID (e.g., 1) or Secp address (0x...)"
+      });
+    }
+
+    const recent = getRecentEvents(validator.id, 1);
+    const lastEvent = recent.length > 0 ? recent[0] : null;
+    const now = Math.floor(Date.now() / 1000);
+    const secondsSinceLastEvent = lastEvent ? now - lastEvent.timestamp : null;
+
+    const stats = getUptimeStats(validator.id, 24);
+    const uptime24h = parseFloat(stats.uptime_percent);
+    const coverage = getEpochCoverage(validator.id);
+
+    // no_data and stale are different failures: one means we never saw this
+    // validator, the other means we stopped seeing it.
+    let state;
+    if (!lastEvent) {
+      state = "no_data";
+    } else if (secondsSinceLastEvent > STALE_AFTER_SECONDS) {
+      state = "stale";
+    } else if (uptime24h < UPTIME_THRESHOLD) {
+      state = "degraded";
+    } else {
+      state = "healthy";
+    }
+
+    res.json({
+      success: true,
+      health: {
+        validator_id: validator.id,
+        validator_name: validator.name,
+        status: validator.status || "unknown",
+        state,
+        healthy: state === "healthy",
+        threshold: UPTIME_THRESHOLD,
+        uptime_24h: uptime24h,
+        last_round: lastEvent?.round || null,
+        last_block_height: getLastFinalizedHeight(validator.id),
+        last_event_ts: lastEvent?.timestamp || null,
+        last_event_utc: lastEvent ? toISO(lastEvent.timestamp) : null,
+        seconds_since_last_event: secondsSinceLastEvent,
+        snapshot_coverage: {
+          epochs: coverage?.epochs || 0,
+          first_epoch: coverage?.first_epoch ?? null,
+          last_epoch: coverage?.last_epoch ?? null,
+          since_utc: coverage?.first_ts ? toISO(coverage.first_ts) : null
+        }
+      }
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });

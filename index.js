@@ -60,13 +60,17 @@ app.get("/monad-api", (req, res) => {
       validators: {
         "GET /monad-api/validator/:id": "Get validator by ID (1, 2, 3...)",
         "GET /monad-api/validator/:address": "Get validator by Secp address",
-        "GET /monad-api/validator/uptime/": "All validators uptime",
+        "GET /monad-api/validator/uptime/": "All validators uptime (?period= & ?limit= for a leaderboard)",
         "GET /monad-api/validator/uptime/:id": "Single validator uptime",
         "GET /monad-api/validator/uptime/:id/history": "Validator round history",
+        "GET /monad-api/validator/:id/health": "Validator health state for monitoring",
+        "GET /monad-api/validator/network/uptime": "Network-wide uptime per epoch",
       },
       staking: {
         "GET /monad-api/staking/epoch": "Current epoch info",
-        "GET /monad-api/staking/pool": "Total staked & bonded tokens",
+        "GET /monad-api/staking/pool": "Total staked, bonded tokens & APR",
+        "GET /monad-api/staking/validator-set": "Active set + who enters/leaves next epoch",
+        "GET /monad-api/staking/proposer": "Current block proposer",
         "GET /monad-api/staking/validator/:valId": "On-chain validator data (stake, commission, rewards)",
         "GET /monad-api/staking/validator/:valId/delegators": "List all delegators of a validator",
         "GET /monad-api/staking/delegator/:address": "All delegations & rewards for an address",
@@ -74,7 +78,8 @@ app.get("/monad-api", (req, res) => {
     },
     query_params: {
       uptime: {
-        window: "Hours window (1-24, default 24)",
+        window: "Hours window (1-168, default 24) — rolling, from raw events",
+        period: "Cumulative from epoch snapshots: '30d', '90d' or 'all'",
         sort: "Sort by: 'uptime' (desc) or 'id' (asc)",
       },
       history: {
