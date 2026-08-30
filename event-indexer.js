@@ -1,0 +1,351 @@
+// src/event-indexer.js - Index staking precompile events into SQLite
+import dotenv from "dotenv";
+dotenv.config();
+
+import { ethers } from "ethers";
+import {
+  getIndexerCursor,
+  setIndexerCursor,
+  commitIndexedRange,
+  getIndexerStats,
+} from "./db.js";
+
+const MONAD_RPC_URL = process.env.MONAD_RPC_URL || "http://127.0.0.1:8080";
+const STAKING_ADDRESS = "0x0000000000000000000000000000000000001000";
+const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();
+
+const POLL_MS = Number(process.env.EVENT_INDEXER_POLL_MS || 30000);
+
+// Blocks per getLogs call. At ~0.3s per block a 30s poll only advances ~100
+// blocks, so this ceiling matters mainly when catching up after downtime.
+const CHUNK_SIZE = Number(process.env.EVENT_INDEXER_CHUNK || 1000);
+
+// Stay this far behind the head so a reorg near the tip doesn't strand us with
+// events that never made it into the canonical chain.
+const CONFIRMATIONS = Number(process.env.EVENT_INDEXER_CONFIRMATIONS || 10);
+
+// Optional override to backfill from a specific block on first run.
+const START_BLOCK = process.env.EVENT_INDEXER_START_BLOCK
+  ? Number(process.env.EVENT_INDEXER_START_BLOCK)
+  : null;
+
+const CURSOR_KEY = "staking_events_last_block";
+
+// Signatures copied from the staking API reference.
+const EVENT_ABI = [
+  "event ValidatorRewarded(uint64 indexed validatorId, address indexed from, uint256 amount, uint64 epoch)",
+  "event ValidatorCreated(uint64 indexed validatorId, address indexed authAddress, uint256 commission)",
+  "event ValidatorStatusChanged(uint64 indexed validatorId, uint64 flags)",
+  "event Delegate(uint64 indexed validatorId, address indexed delegator, uint256 amount, uint64 activationEpoch)",
+  "event Undelegate(uint64 indexed validatorId, address indexed delegator, uint8 withdrawId, uint256 amount, uint64 activationEpoch)",
+  "event Withdraw(uint64 indexed validatorId, address indexed delegator, uint8 withdrawId, uint256 amount, uint64 withdrawEpoch)",
+  "event ClaimRewards(uint64 indexed validatorId, address indexed delegator, uint256 amount, uint64 epoch)",
+  "event CommissionChanged(uint64 indexed validatorId, uint256 oldCommission, uint256 newCommission)",
+  "event EpochChanged(uint64 oldEpoch, uint64 newEpoch)",
+];
+
+const iface = new ethers.Interface(EVENT_ABI);
+
+// ---------- Logging ----------
+const logLevels = { error: 0, warn: 1, info: 2, debug: 3 };
+function log(level, ...args) {
+  const current = logLevels[LOG_LEVEL] ?? 2;
+  if ((logLevels[level] ?? 2) <= current) {
+    const prefix = { error: "❌", warn: "⚠️", info: "ℹ️", debug: "🔍" }[level] || "";
+    console.log("[event-indexer]", prefix, ...args);
+  }
+}
+
+// ---------- Decoding ----------
+
+/**
+ * Turn a decoded log into a row for staking_events, or null for the events we
+ * do not store raw.
+ *
+ * The shape is deliberately generic — validator_id / address / amount_wei /
+ * epoch cover most events, and anything event-specific goes into `extra` — so
+ * that adding an event later does not mean a new table or a new endpoint.
+ */
+function toEventRow(parsed, logEntry, blockTs) {
+  const name = parsed.name;
+  const a = parsed.args;
+
+  const base = {
+    blockNumber: logEntry.blockNumber,
+    logIndex: logEntry.index,
+    txHash: logEntry.transactionHash || null,
+    eventType: name,
+    validatorId: null,
+    address: null,
+    amountWei: null,
+    epoch: null,
+    extra: null,
+    blockTs: blockTs ?? null,
+  };
+
+  switch (name) {
+    case "Delegate":
+      return {
+        ...base,
+        validatorId: Number(a.validatorId),
+        address: a.delegator.toLowerCase(),
+        amountWei: a.amount.toString(),
+        epoch: Number(a.activationEpoch),
+      };
+
+    case "Undelegate":
+      return {
+        ...base,
+        validatorId: Number(a.validatorId),
+        address: a.delegator.toLowerCase(),
+        amountWei: a.amount.toString(),
+        epoch: Number(a.activationEpoch),
+        extra: JSON.stringify({ withdraw_id: Number(a.withdrawId) }),
+      };
+
+    case "Withdraw":
+      return {
+        ...base,
+        validatorId: Number(a.validatorId),
+        address: a.delegator.toLowerCase(),
+        amountWei: a.amount.toString(),
+        epoch: Number(a.withdrawEpoch),
+        extra: JSON.stringify({ withdraw_id: Number(a.withdrawId) }),
+      };
+
+    case "ClaimRewards":
+      return {
+        ...base,
+        validatorId: Number(a.validatorId),
+        address: a.delegator.toLowerCase(),
+        amountWei: a.amount.toString(),
+        epoch: Number(a.epoch),
+      };
+
+    case "CommissionChanged":
+      return {
+        ...base,
+        validatorId: Number(a.validatorId),
+        extra: JSON.stringify({
+          old_commission: a.oldCommission.toString(),
+          new_commission: a.newCommission.toString(),
+        }),
+      };
+
+    case "ValidatorCreated":
+      return {
+        ...base,
+        validatorId: Number(a.validatorId),
+        address: a.authAddress.toLowerCase(),
+        extra: JSON.stringify({ commission: a.commission.toString() }),
+      };
+
+    case "ValidatorStatusChanged":
+      return {
+        ...base,
+        validatorId: Number(a.validatorId),
+        extra: JSON.stringify({ flags: a.flags.toString() }),
+      };
+
+    case "EpochChanged":
+      return {
+        ...base,
+        epoch: Number(a.newEpoch),
+        extra: JSON.stringify({ old_epoch: Number(a.oldEpoch) }),
+      };
+
+    // Fires once per block; rolled up into validator_rewards_epoch instead.
+    case "ValidatorRewarded":
+      return null;
+
+    default:
+      return null;
+  }
+}
+
+// ---------- Indexing ----------
+
+async function fetchBlockTimestamps(provider, blockNumbers) {
+  const timestamps = new Map();
+  // Only the sparse events get a timestamp, so this stays a handful of calls.
+  await Promise.all(
+    [...blockNumbers].map(async (bn) => {
+      try {
+        const block = await provider.getBlock(bn);
+        if (block) timestamps.set(bn, block.timestamp);
+      } catch (err) {
+        log("debug", `Failed to fetch block ${bn}: ${err.message}`);
+      }
+    })
+  );
+  return timestamps;
+}
+
+async function indexRange(provider, fromBlock, toBlock) {
+  const logs = await provider.getLogs({
+    address: STAKING_ADDRESS,
+    fromBlock,
+    toBlock,
+  });
+
+  const decoded = [];
+  const rewardMap = new Map();
+
+  for (const logEntry of logs) {
+    let parsed;
+    try {
+      parsed = iface.parseLog({ topics: [...logEntry.topics], data: logEntry.data });
+    } catch {
+      continue; // event not in our ABI
+    }
+    if (!parsed) continue;
+
+    if (parsed.name === "ValidatorRewarded") {
+      const validatorId = Number(parsed.args.validatorId);
+      const epoch = Number(parsed.args.epoch);
+      const key = `${validatorId}:${epoch}`;
+      const entry = rewardMap.get(key);
+      if (entry) {
+        entry.amountWei += parsed.args.amount;
+        entry.count += 1;
+        entry.lastBlock = Math.max(entry.lastBlock, logEntry.blockNumber);
+        entry.firstBlock = Math.min(entry.firstBlock, logEntry.blockNumber);
+      } else {
+        rewardMap.set(key, {
+          validatorId,
+          epoch,
+          amountWei: parsed.args.amount,
+          count: 1,
+          firstBlock: logEntry.blockNumber,
+          lastBlock: logEntry.blockNumber,
+        });
+      }
+      continue;
+    }
+
+    decoded.push({ parsed, logEntry });
+  }
+
+  const blockNumbers = new Set(decoded.map((d) => d.logEntry.blockNumber));
+  const timestamps = blockNumbers.size
+    ? await fetchBlockTimestamps(provider, blockNumbers)
+    : new Map();
+
+  const rows = [];
+  for (const { parsed, logEntry } of decoded) {
+    const row = toEventRow(parsed, logEntry, timestamps.get(logEntry.blockNumber));
+    if (row) rows.push(row);
+  }
+
+  const rewards = [...rewardMap.values()];
+
+  // Writes and cursor advance together, so a crash cannot double count rewards.
+  commitIndexedRange(rows, rewards, CURSOR_KEY, toBlock);
+
+  return { logs: logs.length, stored: rows.length, rewardRows: rewards.length };
+}
+
+async function runOnce(provider) {
+  const head = await provider.getBlockNumber();
+  const safeHead = head - CONFIRMATIONS;
+
+  let cursor = getIndexerCursor(CURSOR_KEY);
+  if (cursor === null) {
+    const start = START_BLOCK ?? safeHead;
+    setIndexerCursor(CURSOR_KEY, start);
+    cursor = String(start);
+    log("info", `No cursor found, starting from block ${start}`);
+  }
+
+  let from = Number(cursor) + 1;
+  if (from > safeHead) {
+    log("debug", `Nothing to do (cursor ${cursor}, safe head ${safeHead})`);
+    return;
+  }
+
+  let totals = { logs: 0, stored: 0, rewardRows: 0, blocks: 0 };
+
+  while (from <= safeHead) {
+    const to = Math.min(from + CHUNK_SIZE - 1, safeHead);
+    const result = await indexRange(provider, from, to);
+
+    totals.logs += result.logs;
+    totals.stored += result.stored;
+    totals.rewardRows += result.rewardRows;
+    totals.blocks += to - from + 1;
+
+    from = to + 1;
+  }
+
+  if (totals.logs > 0) {
+    log(
+      "info",
+      `Indexed ${totals.blocks} blocks up to ${safeHead}: ${totals.logs} logs, ` +
+        `${totals.stored} stored, ${totals.rewardRows} reward rows touched`
+    );
+  } else {
+    log("debug", `Indexed ${totals.blocks} blocks up to ${safeHead}, no events`);
+  }
+}
+
+// ---------- Scheduling ----------
+let _interval = null;
+let _running = false;
+
+async function tick() {
+  if (_running) {
+    log("debug", "Previous run still in progress, skipping tick");
+    return;
+  }
+  _running = true;
+
+  let provider;
+  try {
+    provider = new ethers.JsonRpcProvider(MONAD_RPC_URL);
+    await runOnce(provider);
+  } catch (err) {
+    log("error", "Indexing failed:", err.message);
+  } finally {
+    if (provider) provider.destroy();
+    _running = false;
+  }
+}
+
+export function startEventIndexer() {
+  const stats = getIndexerStats();
+  const cursor = getIndexerCursor(CURSOR_KEY);
+  log(
+    "info",
+    `Starting event indexer (cursor: ${cursor ?? "none"}, ` +
+      `${stats.events} events, ${stats.reward_rows} reward rows)`
+  );
+
+  tick();
+  _interval = setInterval(tick, POLL_MS);
+  log("info", `Polling every ${POLL_MS / 1000}s, ${CONFIRMATIONS} block confirmations`);
+}
+
+export function stopEventIndexer() {
+  if (_interval) {
+    clearInterval(_interval);
+    _interval = null;
+  }
+}
+
+// ---------- CLI Mode ----------
+const isMain = process.argv[1]?.includes("event-indexer");
+if (isMain) {
+  const provider = new ethers.JsonRpcProvider(MONAD_RPC_URL);
+  runOnce(provider)
+    .then(() => {
+      console.log("\n✅ Indexer run complete:", getIndexerStats());
+      provider.destroy();
+      process.exit(0);
+    })
+    .catch((err) => {
+      console.error("❌ Indexer run failed:", err);
+      process.exit(1);
+    });
+}
+
+export { runOnce };
