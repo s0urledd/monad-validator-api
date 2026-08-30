@@ -228,6 +228,78 @@ export function getRecentEvents(validatorId, limit = 1) {
   `).all(validatorId, limit);
 }
 
+/**
+ * Uptime stats, last event and last finalized height for every validator at
+ * once.
+ *
+ * The per-validator helpers are fine for a single lookup, but calling them in
+ * a loop over the whole set meant three synchronous queries per validator on
+ * every request. These three grouped queries replace that entirely.
+ */
+export function getAllUptimeStats(windowHours = 24) {
+  const cutoff = Math.floor(Date.now() / 1000) - windowHours * 3600;
+
+  const counts = db.prepare(`
+    SELECT validator_id, event_type, COUNT(*) as count
+    FROM uptime_events
+    WHERE timestamp >= ?
+    GROUP BY validator_id, event_type
+  `).all(cutoff);
+
+  const lastEvents = db.prepare(`
+    SELECT validator_id, round, seq_num, event_type, timestamp
+    FROM (
+      SELECT validator_id, round, seq_num, event_type, timestamp,
+             ROW_NUMBER() OVER (PARTITION BY validator_id ORDER BY timestamp DESC) as rn
+      FROM uptime_events
+    )
+    WHERE rn = 1
+  `).all();
+
+  const lastHeights = db.prepare(`
+    SELECT validator_id, seq_num
+    FROM (
+      SELECT validator_id, seq_num,
+             ROW_NUMBER() OVER (PARTITION BY validator_id ORDER BY round DESC) as rn
+      FROM uptime_events
+      WHERE event_type = 'finalized' AND seq_num IS NOT NULL
+    )
+    WHERE rn = 1
+  `).all();
+
+  const stats = new Map();
+  for (const c of counts) {
+    let entry = stats.get(c.validator_id);
+    if (!entry) {
+      entry = { finalized: 0, timeout: 0 };
+      stats.set(c.validator_id, entry);
+    }
+    entry[c.event_type] = c.count;
+  }
+
+  for (const entry of stats.values()) {
+    const total = entry.finalized + entry.timeout;
+    entry.total = total;
+    entry.uptime_percent = total > 0 ? ((entry.finalized / total) * 100).toFixed(2) : "0.00";
+    entry.window_hours = windowHours;
+    entry.since_timestamp = cutoff;
+  }
+
+  return {
+    stats,
+    lastEvent: new Map(lastEvents.map((e) => [e.validator_id, e])),
+    lastHeight: new Map(lastHeights.map((h) => [h.validator_id, h.seq_num])),
+    emptyStats: {
+      finalized: 0,
+      timeout: 0,
+      total: 0,
+      uptime_percent: "0.00",
+      window_hours: windowHours,
+      since_timestamp: cutoff,
+    },
+  };
+}
+
 export function cleanupOldEvents(retentionHours = 48) {
   const cutoff = Math.floor(Date.now() / 1000) - (retentionHours * 3600);
   // Only delete events older than cutoff AND that have been snapshotted.

@@ -13,7 +13,8 @@ import {
   getNetworkUptimeByEpoch,
   getValidatorCountsByStatus,
   getWeeklyUptime,
-  getAllWeeklyUptime
+  getAllWeeklyUptime,
+  getAllUptimeStats
 } from "./db.js";
 import {
   VDP_RULES,
@@ -74,7 +75,9 @@ function formatValidator(v) {
   };
 }
 
-function formatUptime(stats, validator, lastEvent = null) {
+// lastHeight is passed in rather than looked up here, so the list route can
+// resolve it for every validator in one query instead of one query each.
+function formatUptime(stats, validator, lastEvent = null, lastHeight = undefined) {
   return {
     validator_id: validator.id,
     validator_name: validator.name,
@@ -86,7 +89,8 @@ function formatUptime(stats, validator, lastEvent = null) {
     total_events: stats.total,
     uptime_percent: parseFloat(stats.uptime_percent),
     last_round: lastEvent?.round || null,
-    last_block_height: getLastFinalizedHeight(validator.id),
+    last_block_height:
+      lastHeight === undefined ? getLastFinalizedHeight(validator.id) : lastHeight,
     since_timestamp: stats.since_timestamp,
     since_utc: new Date(stats.since_timestamp * 1000).toISOString()
   };
@@ -97,10 +101,20 @@ function formatUptime(stats, validator, lastEvent = null) {
 // GET /monad-api/validators
 router.get("/", (req, res) => {
   try {
-    const validators = getAllValidators();
+    const all = getAllValidators();
+    const total = all.length;
+
+    // Optional: the full set is small enough to return whole, so paging stays
+    // opt-in rather than a breaking change to the default response.
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
+    const validators = req.query.limit
+      ? all.slice(offset, offset + Math.min(Math.max(Number(req.query.limit) || 50, 1), 500))
+      : all.slice(offset);
+
     res.json({
       success: true,
       count: validators.length,
+      total,
       validators: validators.map(formatValidator)
     });
   } catch (err) {
@@ -274,23 +288,34 @@ router.get("/uptime", (req, res) => {
     }
 
     const validators = getAllValidators();
-    let results = validators.map(v => {
-      const stats = getUptimeStats(v.id, windowHours);
-      const recentEvents = getRecentEvents(v.id, 1);
-      const lastEvent = recentEvents.length > 0 ? recentEvents[0] : null;
-      return formatUptime(stats, v, lastEvent);
-    });
-    
+    const bulk = getAllUptimeStats(windowHours);
+
+    let results = validators.map(v =>
+      formatUptime(
+        bulk.stats.get(v.id) || bulk.emptyStats,
+        v,
+        bulk.lastEvent.get(v.id) || null,
+        bulk.lastHeight.get(v.id) ?? null
+      )
+    );
+
     if (sortBy === "uptime") {
       results.sort((a, b) => b.uptime_percent - a.uptime_percent);
     } else if (sortBy === "id") {
       results.sort((a, b) => a.validator_id - b.validator_id);
     }
-    
+
+    const total = results.length;
+    if (req.query.limit) {
+      const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 500);
+      results = results.slice(0, limit);
+    }
+
     res.json({
       success: true,
       window_hours: windowHours,
       count: results.length,
+      total,
       validators: results
     });
   } catch (err) {
