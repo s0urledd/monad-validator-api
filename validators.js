@@ -6,10 +6,14 @@ import {
   getAllValidators,
   getUptimeStats,
   getRecentEvents,
-  getValidatorCount, getLastFinalizedHeight
+  getValidatorCount, getLastFinalizedHeight,
+  getCumulativeUptime,
+  getAllCumulativeUptime
 } from "./db.js";
 
 const router = Router();
+
+const CUMULATIVE_PERIODS = ["30d", "90d", "all"];
 
 // ---------- Helpers ----------
 function toISO(epoch) {
@@ -97,11 +101,14 @@ router.get("/stats", (req, res) => {
 });
 
 // GET /monad-api/validators/uptime/:idOrAddress
+// ?period=30d|90d|all  -> cumulative, from permanent epoch snapshots
+// ?window=1-168        -> rolling window over raw events (default)
 router.get("/uptime/:idOrAddress", (req, res) => {
   try {
     const { idOrAddress } = req.params;
+    const period = req.query.period;
     const windowHours = Math.min(Math.max(Number(req.query.window) || 24, 1), 168);
-    
+
     const validator = resolveValidator(idOrAddress);
     if (!validator) {
       return res.status(404).json({
@@ -110,7 +117,32 @@ router.get("/uptime/:idOrAddress", (req, res) => {
         hint: "Use validator ID (e.g., 1) or Secp address (0x...)"
       });
     }
-    
+
+    if (period) {
+      if (!CUMULATIVE_PERIODS.includes(period)) {
+        return res.status(400).json({
+          success: false,
+          error: "Invalid period",
+          hint: `Use one of: ${CUMULATIVE_PERIODS.join(", ")}`
+        });
+      }
+      const cumulative = getCumulativeUptime(validator.id, period);
+      return res.json({
+        success: true,
+        period,
+        uptime: {
+          validator_id: validator.id,
+          validator_name: validator.name,
+          secp_address: validator.secp_address,
+          status: validator.status || "unknown",
+          finalized_count: cumulative.finalized,
+          timeout_count: cumulative.timeout,
+          total_events: cumulative.total,
+          uptime_percent: cumulative.uptime_percent
+        }
+      });
+    }
+
     const stats = getUptimeStats(validator.id, windowHours);
     const recentEvents = getRecentEvents(validator.id, 1);
     const lastEvent = recentEvents.length > 0 ? recentEvents[0] : null;
@@ -158,11 +190,52 @@ router.get("/uptime/:idOrAddress/history", (req, res) => {
 });
 
 // GET /monad-api/validators/uptime
+// ?period=30d|90d|all  -> cumulative, from permanent epoch snapshots
+// ?window=1-168        -> rolling window over raw events (default)
 router.get("/uptime", (req, res) => {
   try {
+    const period = req.query.period;
     const windowHours = Math.min(Math.max(Number(req.query.window) || 24, 1), 168);
     const sortBy = req.query.sort || "uptime";
-    
+
+    if (period) {
+      if (!CUMULATIVE_PERIODS.includes(period)) {
+        return res.status(400).json({
+          success: false,
+          error: "Invalid period",
+          hint: `Use one of: ${CUMULATIVE_PERIODS.join(", ")}`
+        });
+      }
+
+      const byId = new Map(getAllValidators().map((v) => [v.id, v]));
+      let rows = getAllCumulativeUptime(period).map((r) => {
+        const v = byId.get(r.validator_id);
+        return {
+          validator_id: r.validator_id,
+          validator_name: v?.name || `Validator #${r.validator_id}`,
+          secp_address: r.secp_address,
+          status: v?.status || "unknown",
+          finalized_count: r.finalized,
+          timeout_count: r.timeout,
+          total_events: r.total,
+          uptime_percent: r.uptime_percent
+        };
+      });
+
+      if (sortBy === "id") {
+        rows.sort((a, b) => a.validator_id - b.validator_id);
+      } else {
+        rows.sort((a, b) => b.uptime_percent - a.uptime_percent);
+      }
+
+      return res.json({
+        success: true,
+        period,
+        count: rows.length,
+        validators: rows
+      });
+    }
+
     const validators = getAllValidators();
     let results = validators.map(v => {
       const stats = getUptimeStats(v.id, windowHours);

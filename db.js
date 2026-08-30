@@ -301,6 +301,40 @@ export function getStakingPool() {
 }
 
 // ---------- Epoch Snapshots ----------
+
+// Every BOUNDARY_BLOCK_PERIOD blocks is an epoch boundary.
+export const BOUNDARY_BLOCK_PERIOD = 50000;
+
+/**
+ * Measure the real block time from observed epoch snapshot timestamps.
+ *
+ * Snapshots are written at epoch transitions, so the gap between two snapshots
+ * spans (epochDiff * BOUNDARY_BLOCK_PERIOD) blocks. Averaging over several
+ * epochs smooths out the epoch watcher's polling jitter.
+ *
+ * Returns seconds-per-block, or null when there aren't enough snapshots yet.
+ */
+export function getMeasuredBlockTime(epochSpan = 12) {
+  const rows = db.prepare(`
+    SELECT epoch, MIN(snapshot_ts) as ts
+    FROM uptime_epoch_snapshots
+    GROUP BY epoch
+    ORDER BY epoch DESC
+    LIMIT ?
+  `).all(epochSpan + 1);
+
+  if (rows.length < 2) return null;
+
+  const newest = rows[0];
+  const oldest = rows[rows.length - 1];
+  const epochsSpanned = newest.epoch - oldest.epoch;
+  const secondsSpanned = newest.ts - oldest.ts;
+
+  if (epochsSpanned <= 0 || secondsSpanned <= 0) return null;
+
+  return secondsSpanned / (epochsSpanned * BOUNDARY_BLOCK_PERIOD);
+}
+
 export function saveEpochSnapshotsBatch(snapshots) {
   const stmt = db.prepare(`
     INSERT INTO uptime_epoch_snapshots (validator_id, secp_address, epoch, finalized_count, timeout_count, total_events, uptime_percent)

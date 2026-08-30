@@ -8,14 +8,28 @@ import {
   getAllDelegators,
   getEpochInfo,
   getLivePool,
+  getValidatorSets,
 } from "./staking.js";
-import { getValidatorById, getValidatorCount } from "./db.js";
+import { getValidatorById, getValidatorCount, getMeasuredBlockTime } from "./db.js";
 
 const router = Router();
 
 // ---------- Helpers ----------
 function toMON(wei) {
   return parseFloat(parseFloat(ethers.formatEther(BigInt(wei))).toFixed(2));
+}
+
+// ---------- APR ----------
+// Docs: a fixed REWARD of 18 MON per block, and 50,000 blocks per epoch at
+// roughly 4h12m, which implies ~0.3024s per block.
+const BLOCK_REWARD_MON = 18;
+const ASSUMED_BLOCK_TIME_S = 0.3024;
+const SECONDS_PER_YEAR = 365.25 * 24 * 3600;
+
+function aprFrom(blockTimeSeconds, bondedTokens) {
+  if (!blockTimeSeconds || !bondedTokens || bondedTokens <= 0) return null;
+  const blocksPerYear = SECONDS_PER_YEAR / blockTimeSeconds;
+  return parseFloat(((blocksPerYear * BLOCK_REWARD_MON) / bondedTokens * 100).toFixed(2));
 }
 
 // ---------- Epoch ----------
@@ -51,23 +65,93 @@ router.get("/pool", async (req, res) => {
 
     const { consensus_validators, execution_validators, ...poolData } = pool;
 
-    // APR = (blocksPerYear × blockReward) / bondedTokens × 100
-    // Rewards only go to active consensus validators, so bonded_tokens is the correct denominator.
-    const blocksPerYear = (365.25 * 24 * 3600) / 0.3997;
-    const apr = poolData.bonded_tokens > 0
-      ? parseFloat(((blocksPerYear * 25) / poolData.bonded_tokens * 100).toFixed(2))
-      : 0;
+    // Rewards only go to active consensus validators, so bonded_tokens is the denominator.
+    // Two figures are published rather than one: a hardcoded block time is the classic way
+    // to be silently wrong about yield, so the assumed and the measured values are both
+    // returned along with every input, and the number stays auditable.
+    const measuredBlockTime = getMeasuredBlockTime();
+    const estimated_apr = aprFrom(ASSUMED_BLOCK_TIME_S, poolData.bonded_tokens);
+    const calculated_apr = aprFrom(measuredBlockTime, poolData.bonded_tokens);
 
     res.json({
       success: true,
       ...poolData,
-      apr,
+      apr: calculated_apr ?? estimated_apr,
+      estimated_apr,
+      calculated_apr,
+      apr_inputs: {
+        block_reward: BLOCK_REWARD_MON,
+        assumed_block_time: ASSUMED_BLOCK_TIME_S,
+        measured_block_time: measuredBlockTime
+          ? parseFloat(measuredBlockTime.toFixed(4))
+          : null,
+        blocks_per_year: Math.round(
+          SECONDS_PER_YEAR / (measuredBlockTime || ASSUMED_BLOCK_TIME_S)
+        ),
+        bonded_tokens: poolData.bonded_tokens,
+        note: "Commission applies to inflation rewards only; priority fees currently go entirely to the validator.",
+      },
       total_validators: getValidatorCount(),
       active_validators: consensus_validators,
       ...(epoch && { epoch: epoch.epoch, in_delay_period: epoch.in_delay_period }),
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ---------- Validator Set ----------
+
+function describeValidators(ids) {
+  return ids.map((id) => {
+    const v = getValidatorById(id);
+    return {
+      validator_id: id,
+      name: v?.name || `Validator #${id}`,
+      stake: v?.stake_wei ? toMON(v.stake_wei) : null,
+    };
+  });
+}
+
+// GET /monad-api/staking/validator-set
+router.get("/validator-set", async (req, res) => {
+  try {
+    const [sets, epoch] = await Promise.all([
+      getValidatorSets(),
+      getEpochInfo().catch(() => null),
+    ]);
+
+    const consensus = new Set(sets.consensus);
+    const snapshot = new Set(sets.snapshot);
+
+    // snapshot is next epoch's set, consensus is this epoch's
+    const entering = sets.snapshot.filter((id) => !consensus.has(id));
+    const leaving = sets.consensus.filter((id) => !snapshot.has(id));
+    const eligibleNotActive = sets.execution.filter(
+      (id) => !consensus.has(id) && !snapshot.has(id)
+    );
+
+    res.json({
+      success: true,
+      ...(epoch && { epoch: epoch.epoch, in_delay_period: epoch.in_delay_period }),
+      counts: {
+        active: sets.consensus.length,
+        next_epoch: sets.snapshot.length,
+        eligible: sets.execution.length,
+        entering: entering.length,
+        leaving: leaving.length,
+        eligible_not_active: eligibleNotActive.length,
+      },
+      entering: describeValidators(entering),
+      leaving: describeValidators(leaving),
+      eligible_not_active: describeValidators(eligibleNotActive),
+    });
+  } catch (err) {
+    res.status(503).json({
+      success: false,
+      error: "Failed to query validator sets",
+      details: err.message,
+    });
   }
 });
 
@@ -103,6 +187,9 @@ router.get("/validator/:valId", async (req, res) => {
         status: validator?.status || "unknown",
         stake: onChain.stake,
         commission: onChain.commission,
+        // The auth address's own delegation is the validator's self-stake, which the
+        // active set requires to be at least MIN_AUTH_ADDRESS_STAKE (100,000 MON).
+        self_stake: authDelegation ? authDelegation.stake : null,
         unclaimed_rewards: authDelegation ? authDelegation.unclaimed_rewards : 0,
         auth_address: onChain.auth_address,
       },

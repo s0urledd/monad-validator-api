@@ -25,6 +25,7 @@ const STAKING_ABI = [
   // Validator sets (paginated)
   "function getExecutionValidatorSet(uint32 startIndex) external returns (bool isDone, uint32 nextIndex, uint64[] valIds)",
   "function getConsensusValidatorSet(uint32 startIndex) external returns (bool isDone, uint32 nextIndex, uint64[] valIds)",
+  "function getSnapshotValidatorSet(uint32 startIndex) external returns (bool isDone, uint32 nextIndex, uint64[] valIds)",
 ];
 
 // ---------- Helpers ----------
@@ -184,6 +185,41 @@ function getConsensusValidatorSet() {
       ids.push(...result[2].map((id) => Number(id)));
     }
     return ids;
+  });
+}
+
+function getSnapshotValidatorSet() {
+  return cached("snapshot-val-set", async () => {
+    const contract = getContract();
+    const ids = [];
+    let startIndex = 0;
+    let isDone = false;
+
+    while (!isDone) {
+      const result = await contract.getSnapshotValidatorSet.staticCall(startIndex);
+      isDone = result[0];
+      startIndex = Number(result[1]);
+      ids.push(...result[2].map((id) => Number(id)));
+    }
+    return ids;
+  });
+}
+
+/**
+ * All three validator sets at once.
+ *
+ * consensus = active this epoch, snapshot = active next epoch,
+ * execution = every validator eligible to be considered. Comparing them yields
+ * who is entering, who is leaving, and who is eligible but below the cut.
+ */
+export function getValidatorSets() {
+  return cached("validator-sets", async () => {
+    const [execution, consensus, snapshot] = await Promise.all([
+      getExecutionValidatorSet(),
+      getConsensusValidatorSet(),
+      getSnapshotValidatorSet(),
+    ]);
+    return { execution, consensus, snapshot };
   });
 }
 
