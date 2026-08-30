@@ -218,26 +218,42 @@ router.get("/validator/:valId/rewards", (req, res) => {
 
     const rows = getValidatorEpochRewards(valId, Number(req.query.limit) || 100);
 
-    let totalWei = 0n;
+    // ValidatorRewarded carries the delegators' share, not the whole block
+    // reward: the amount is REWARD x (1 - commission), verified against every
+    // commission rate on the network. The gross figure and the validator's own
+    // commission income are therefore derived rather than observed.
+    const grossWei = (blocks) => BigInt(blocks) * BigInt(BLOCK_REWARD_MON) * 10n ** 18n;
+
+    let delegatorWei = 0n;
     let blocks = 0;
     for (const r of rows) {
-      totalWei += BigInt(r.reward_wei);
+      delegatorWei += BigInt(r.reward_wei);
       blocks += r.event_count;
     }
+    const totalGross = grossWei(blocks);
 
     res.json({
       success: true,
       validator_id: valId,
       epochs_covered: rows.length,
-      total_rewards: toMON(totalWei),
       blocks_proposed: blocks,
-      epochs: rows.map((r) => ({
-        epoch: r.epoch,
-        rewards: toMON(r.reward_wei),
-        blocks_proposed: r.event_count,
-        first_block: r.first_block,
-        last_block: r.last_block,
-      })),
+      block_reward: BLOCK_REWARD_MON,
+      gross_rewards: toMON(totalGross),
+      delegator_rewards: toMON(delegatorWei),
+      commission_rewards: toMON(totalGross - delegatorWei),
+      epochs: rows.map((r) => {
+        const gross = grossWei(r.event_count);
+        const delegator = BigInt(r.reward_wei);
+        return {
+          epoch: r.epoch,
+          blocks_proposed: r.event_count,
+          gross_rewards: toMON(gross),
+          delegator_rewards: toMON(delegator),
+          commission_rewards: toMON(gross - delegator),
+          first_block: r.first_block,
+          last_block: r.last_block,
+        };
+      }),
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
