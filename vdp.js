@@ -168,15 +168,24 @@ export function commissionOf(validator) {
 // The program applies to mainnet. On any other network the weekly uptime is
 // still real, but a strike carries no consequence, so the response says so
 // rather than presenting a testnet breach as if it mattered.
-export const VDP_APPLIES =
-  (process.env.NETWORK || "").toLowerCase() === "mainnet";
+//
+// Read at call time, never at module scope: ES module imports are hoisted
+// above the body of index.js, so a module-scope read happens before
+// dotenv.config() has run and sees nothing.
+export function vdpApplies() {
+  return (process.env.NETWORK || "").toLowerCase() === "mainnet";
+}
 
-export const VDP_NOTE =
-  (VDP_APPLIES
-    ? ""
-    : "This deployment is not on mainnet. The Validator Delegation Program " +
-      "applies to mainnet only, so these figures are uptime measurements " +
-      "rather than programme standing. ") +
+const NOTE_BASE =
   "Weeks run Monday 00:00 UTC. Uptime is summed across epochs, not averaged. " +
   "Only completed weeks can count as strikes. The 48h upgrade window and 24h " +
   "outreach response requirements are not measured here.";
+
+export function vdpNote() {
+  if (vdpApplies()) return NOTE_BASE;
+  return (
+    "This deployment is not on mainnet. The Validator Delegation Program " +
+    "applies to mainnet only, so these figures are uptime measurements " +
+    "rather than programme standing. " + NOTE_BASE
+  );
+}

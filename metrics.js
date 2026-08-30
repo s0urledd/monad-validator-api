@@ -54,8 +54,12 @@ class Registry {
 
 const VDP_STATES = ["compliant", "at_risk", "breach", "insufficient_data"];
 
-// The Validator Delegation Program is a mainnet arrangement.
-const IS_MAINNET = (process.env.NETWORK || "").toLowerCase() === "mainnet";
+// The Validator Delegation Program is a mainnet arrangement. Read at call
+// time: a module-scope read runs before index.js gets to dotenv.config(),
+// because ES module imports are hoisted above the body.
+function isMainnet() {
+  return (process.env.NETWORK || "").toLowerCase() === "mainnet";
+}
 
 export function renderMetrics() {
   const r = new Registry();
@@ -132,7 +136,7 @@ export function renderMetrics() {
   // The delegation program is a mainnet arrangement. The weekly uptime maths
   // runs anywhere, but a testnet "breach" means nothing, so these series are
   // withheld rather than left to raise alerts nobody should act on.
-  if (IS_MAINNET) {
+  if (isMainnet()) {
     const weeksByValidator = new Map();
     for (const row of getAllWeeklyUptime()) {
       if (!weeksByValidator.has(row.validator_id)) weeksByValidator.set(row.validator_id, []);

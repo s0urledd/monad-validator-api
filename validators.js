@@ -18,8 +18,8 @@ import {
 } from "./db.js";
 import {
   VDP_RULES,
-  VDP_NOTE,
-  VDP_APPLIES,
+  vdpNote,
+  vdpApplies,
   evaluateWeeks,
   evaluateCompliance,
   commissionOf
@@ -428,8 +428,8 @@ router.get("/vdp", (req, res) => {
     res.json({
       success: true,
       rules: VDP_RULES,
-      applies: VDP_APPLIES,
-      note: VDP_NOTE,
+      applies: vdpApplies(),
+      note: vdpNote(),
       summary,
       count: results.length,
       validators: results
@@ -458,8 +458,8 @@ router.get("/:idOrAddress/vdp", (req, res) => {
     res.json({
       success: true,
       rules: VDP_RULES,
-      applies: VDP_APPLIES,
-      note: VDP_NOTE,
+      applies: vdpApplies(),
+      note: vdpNote(),
       vdp: {
         validator_id: validator.id,
         validator_name: validator.name,
