@@ -241,6 +241,11 @@ router.get("/validator/:valId/rewards", (req, res) => {
       gross_rewards: toMON(totalGross),
       delegator_rewards: toMON(delegatorWei),
       commission_rewards: toMON(totalGross - delegatorWei),
+      // Only delegator_rewards is measured. The other two assume every block
+      // paid exactly block_reward, which holds for most epochs but not all:
+      // observed per-block shares occasionally fall a little short of the flat
+      // rate, so treat them as estimates rather than accounting.
+      derived: ["gross_rewards", "commission_rewards"],
       epochs: rows.map((r) => {
         const gross = grossWei(r.event_count);
         const delegator = BigInt(r.reward_wei);

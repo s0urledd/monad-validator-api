@@ -1038,7 +1038,7 @@
           "Events"
         ],
         "summary": "Block rewards per epoch",
-        "description": "Rolled up from `ValidatorRewarded`, which fires once per block. `blocks_proposed` is the number of reward events observed, which is how many blocks the validator led while the indexer was running.",
+        "description": "Rolled up from `ValidatorRewarded`, which fires once per block.\n\nThe event carries the delegators' share, not the whole block reward: the amount is `REWARD x (1 - commission)`, confirmed against every commission rate on the network. So `delegator_rewards` is measured, while `gross_rewards` and `commission_rewards` are derived on the assumption that each block paid exactly `block_reward`. That assumption holds for most epochs but not all, so the response names the derived fields.\n\n`blocks_proposed` counts reward events observed, which is how many blocks the validator led while the indexer was running.",
         "operationId": "getValidatorRewards",
         "parameters": [
           {
