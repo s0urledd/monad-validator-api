@@ -29,7 +29,9 @@ delegation or commission change not captured live is unrecoverable.
 
 From that history the service computes VDP compliance — weekly uptime against
 the 98% line and strikes inside the rolling three-month window — which is
-otherwise not something an operator can check for themselves.
+otherwise not something an operator can check for themselves. Three strikes
+report as `breach`, meaning the condition is met; whether the Foundation
+removes delegation is its call and not something the API can see.
 
 ## Architecture
 
