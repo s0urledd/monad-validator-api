@@ -1087,6 +1087,195 @@
           }
         }
       }
+    },
+    "/monad-api/staking/flow": {
+      "get": {
+        "tags": [
+          "Events"
+        ],
+        "summary": "Stake flow across the network",
+        "description": "Net stake movement from indexed Delegate and Undelegate events. Only those two move stake: Withdraw is the delegator collecting funds Undelegate already removed, and ClaimRewards is rewards, so counting either would double count.\n\n`?period=24h|7d|30d|all`, default 7d. Sums run in BigInt and are returned in MON.\n\nSorted by absolute net movement, so the validators gaining or losing the most stake come first.",
+        "operationId": "stakeFlow",
+        "parameters": [
+          {
+            "name": "period",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "24h",
+                "7d",
+                "30d",
+                "all"
+              ],
+              "default": "7d"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Per-validator flow with a network total.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "period": "7d",
+                  "network": {
+                    "inflow": 1840211.5,
+                    "outflow": 622930.2,
+                    "net": 1217281.3,
+                    "delegations": 68,
+                    "undelegations": 116,
+                    "unique_delegators": 141
+                  },
+                  "count": 57,
+                  "validators": [
+                    {
+                      "validator_id": 3,
+                      "name": "gmonads.com",
+                      "inflow": 412000,
+                      "outflow": 0,
+                      "net": 412000,
+                      "delegations": 9,
+                      "undelegations": 0,
+                      "unique_delegators": 9
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/monad-api/staking/validator/{valId}/flow": {
+      "get": {
+        "tags": [
+          "Events"
+        ],
+        "summary": "Stake flow for one validator",
+        "description": "Net stake movement from indexed Delegate and Undelegate events. Only those two move stake: Withdraw is the delegator collecting funds Undelegate already removed, and ClaimRewards is rewards, so counting either would double count.\n\n`?period=24h|7d|30d|all`, default 7d. Sums run in BigInt and are returned in MON.",
+        "operationId": "validatorStakeFlow",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ValId"
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "24h",
+                "7d",
+                "30d",
+                "all"
+              ],
+              "default": "7d"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Flow for the validator.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "validator_id": 82,
+                  "validator_name": "Huginn",
+                  "period": "7d",
+                  "flow": {
+                    "inflow": 1423.25,
+                    "outflow": 0,
+                    "net": 1423.25,
+                    "delegations": 3,
+                    "undelegations": 0,
+                    "unique_delegators": 3
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/llms.txt": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Agent-readable API description",
+        "description": "A plain-text rendering of this document per llmstxt.org, generated from the same OpenAPI source at startup. Intended for LLM agents that need to discover the API without parsing JSON.",
+        "operationId": "llmsTxt",
+        "responses": {
+          "200": {
+            "description": "Markdown-flavoured text.",
+            "content": {
+              "text/plain": {
+                "example": "# Monad Validator & Staking Data API\n\n> Validator metadata, uptime history, VDP compliance and on-chain staking data for Monad.\n\n## Endpoints\n\n### Uptime\n- GET /monad-api/validators/uptime: Uptime for all validators (params: Window, Period, Sort, Limit)\n"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/monad-api/status": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Data freshness",
+        "description": "How current each dataset is: the newest raw round, the last epoch snapshot, and the event indexer's cursor. Read entirely from SQLite, so it answers \"is the data current\" even when the node is unreachable.",
+        "operationId": "status",
+        "responses": {
+          "200": {
+            "description": "Freshness of each data source.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "network": "mainnet",
+                  "now_utc": "2026-09-08T10:00:00.000Z",
+                  "validators": {
+                    "total": 222,
+                    "active": 196,
+                    "inactive": 26
+                  },
+                  "uptime_events": {
+                    "count": 571204,
+                    "newest_utc": "2026-09-08T09:59:41.000Z",
+                    "seconds_since_newest": 19
+                  },
+                  "snapshots": {
+                    "last_epoch": 2062,
+                    "last_utc": "2026-09-08T07:14:00.000Z",
+                    "seconds_since_last": 9960,
+                    "measured_block_time": 0.3024
+                  },
+                  "event_indexer": {
+                    "last_block": 101312173,
+                    "events": 12611,
+                    "reward_rows": 3546
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {

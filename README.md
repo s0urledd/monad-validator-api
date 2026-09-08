@@ -86,7 +86,8 @@ cleanup removes nothing, so a stalled indexer costs disk rather than history.
 
 The full reference lives at `/` on a running instance, generated from
 [`openapi.json`](openapi.json), where each endpoint can also be called live.
-`GET /monad-api` returns the same list as JSON.
+`GET /monad-api` returns the same list as JSON and `/llms.txt` renders it as
+plain text for agents. All three come from the one document.
 
 | | |
 |---|---|
@@ -110,8 +111,12 @@ The full reference lives at `/` on a running instance, generated from
 | `GET /monad-api/staking/validator/{id}/events` | Indexed events for one validator |
 | `GET /monad-api/staking/events` | Network-wide. `?type` `?address` `?limit` |
 | `GET /monad-api/staking/delegator/{address}` | Every delegation an address holds |
+| `GET /monad-api/staking/flow` | Net stake movement per validator. `?period=24h|7d|30d|all` |
+| `GET /monad-api/staking/validator/{id}/flow` | Same, for one validator |
+| `GET /monad-api/status` | Data freshness: newest round, last snapshot, indexer cursor |
 | `GET /health` | Liveness |
 | `GET /metrics` | Prometheus exposition |
+| `GET /llms.txt` | Agent-readable rendering of the spec |
 
 Uptime endpoints answer two different questions. Without `period` they read the
 rolling event window (`?window=1..168` hours, default 24). With
