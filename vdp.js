@@ -197,8 +197,11 @@ export function vdpApplies() {
 
 const NOTE_BASE =
   "Weeks run Monday 00:00 UTC. Uptime is summed across epochs, not averaged. " +
-  "Only completed weeks can count as strikes. The 48h upgrade window and 24h " +
-  "outreach response requirements are not measured here.";
+  "Only completed weeks can count as strikes. A status of breach means three " +
+  "flagged weeks fall inside the rolling window; whether delegation is actually " +
+  "removed is at the Monad Foundation's discretion and is not known to this API. " +
+  "The 48h upgrade window and 24h outreach response requirements are not " +
+  "measured here.";
 
 export function vdpNote() {
   if (vdpApplies()) return NOTE_BASE;
