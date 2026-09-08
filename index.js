@@ -13,7 +13,16 @@ import { startPeriodicSync } from "./github-sync.js";
 import { startStatusSync } from "./status-sync.js";
 import { startEventIndexer } from "./event-indexer.js";
 import { renderMetrics } from "./metrics.js";
-import { getValidatorCount } from "./db.js";
+import {
+  getValidatorCount,
+  getValidatorCountsByStatus,
+  getIndexerStats,
+  getIndexerCursor,
+  getLastSnapshotEpoch,
+  getLastSnapshotTimestamp,
+  getMeasuredBlockTime,
+  getUptimeEventBounds,
+} from "./db.js";
 import { rateLimit } from "./rate-limit.js";
 
 const PORT = Number(process.env.PORT || 3000);
@@ -41,6 +50,66 @@ try {
 } catch (err) {
   console.error("[api] ⚠️ Could not load openapi.json:", err.message);
 }
+
+// A plain-text rendering of the spec for LLM agents, per llmstxt.org. Built
+// once at startup from the same document that drives the docs page, so it
+// describes exactly what the server serves.
+function llmsTxtFromSpec() {
+  if (!openapi) return "# Monad Validator & Staking Data API\n\nSpec unavailable.\n";
+  const info = openapi.info || {};
+  const lines = [];
+  lines.push(`# ${info.title || "Monad Validator & Staking Data API"}`, "");
+  if (info.summary) lines.push(`> ${info.summary}`, "");
+  if (info.description) lines.push(info.description.trim(), "");
+
+  const servers = (openapi.servers || []).filter((s) => !/localhost/.test(s.url));
+  if (servers.length) {
+    lines.push("## Base URLs", "");
+    for (const s of servers) lines.push(`- ${s.url}${s.description ? ` (${s.description})` : ""}`);
+    lines.push("");
+  }
+
+  lines.push(
+    "## Conventions",
+    "",
+    "- Every endpoint is GET and returns JSON with a top-level `success` boolean.",
+    "- No authentication. Staking routes allow 60 requests per minute per IP and return `X-RateLimit-*` headers; validator routes are unmetered.",
+    "- Validators are addressed by numeric ID or secp256k1 compressed public key.",
+    "- Monetary values are numbers in MON, not strings.",
+    "- Uptime endpoints take `?window=` (hours, rolling raw events) or `?period=30d|90d|all` (permanent epoch snapshots).",
+    "- The full OpenAPI 3.1 document is at /monad-api/openapi.json and a live reference at /.",
+    ""
+  );
+
+  const byTag = {};
+  for (const [route, item] of Object.entries(openapi.paths || {})) {
+    const op = item.get;
+    if (!op) continue;
+    (byTag[op.tags?.[0] || "Other"] ||= []).push({ route, op });
+  }
+  const order = (openapi.tags || []).map((t) => t.name);
+  const tags = Object.keys(byTag).sort(
+    (a, b) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99)
+  );
+
+  lines.push("## Endpoints", "");
+  for (const tag of tags) {
+    const tagDesc = (openapi.tags || []).find((t) => t.name === tag)?.description;
+    lines.push(`### ${tag}`, "");
+    if (tagDesc) lines.push(tagDesc, "");
+    for (const { route, op } of byTag[tag]) {
+      const params = (op.parameters || [])
+        .map((p) => (p.$ref ? p.$ref.split("/").pop() : p.name))
+        .filter(Boolean);
+      const desc = (op.description || "").replace(/\s+/g, " ").trim();
+      lines.push(`- GET ${route}: ${op.summary || ""}${params.length ? ` (params: ${params.join(", ")})` : ""}`);
+      if (desc) lines.push(`  ${desc}`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+const LLMS_TXT = llmsTxtFromSpec();
 
 function endpointListFromSpec() {
   if (!openapi?.paths) return {};
@@ -100,6 +169,52 @@ app.get("/metrics", (req, res) => {
   } catch (err) {
     log("error", "Metrics render failed:", err.message);
     res.status(500).type("text/plain").send("# metrics unavailable\n");
+  }
+});
+
+// Agent-readable description of the API.
+app.get("/llms.txt", (req, res) => {
+  res.type("text/plain; charset=utf-8").send(LLMS_TXT);
+});
+
+// Data freshness. Everything here is read from SQLite, so it answers "is the
+// data current" without depending on the node being reachable.
+app.get("/monad-api/status", (req, res) => {
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const lastSnapTs = getLastSnapshotTimestamp();
+    const bounds = getUptimeEventBounds();
+    const cursor = getIndexerCursor("staking_events_last_block");
+    const idx = getIndexerStats();
+    const blockTime = getMeasuredBlockTime();
+
+    res.json({
+      success: true,
+      network: process.env.NETWORK || "unknown",
+      now_utc: new Date(now * 1000).toISOString(),
+      validators: { total: getValidatorCount(), ...getValidatorCountsByStatus() },
+      uptime_events: {
+        count: bounds?.count ?? 0,
+        oldest_utc: bounds?.oldest ? new Date(bounds.oldest * 1000).toISOString() : null,
+        newest_utc: bounds?.newest ? new Date(bounds.newest * 1000).toISOString() : null,
+        seconds_since_newest: bounds?.newest ? now - bounds.newest : null,
+      },
+      snapshots: {
+        last_epoch: getLastSnapshotEpoch(),
+        last_utc: lastSnapTs ? new Date(lastSnapTs * 1000).toISOString() : null,
+        seconds_since_last: lastSnapTs ? now - lastSnapTs : null,
+        measured_block_time: blockTime ? parseFloat(blockTime.toFixed(4)) : null,
+      },
+      event_indexer: {
+        last_block: cursor !== null ? Number(cursor) : null,
+        events: idx.events,
+        reward_rows: idx.reward_rows,
+        first_event_block: idx.first_event_block,
+        last_event_block: idx.last_event_block,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

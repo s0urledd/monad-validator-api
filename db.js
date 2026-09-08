@@ -788,6 +788,40 @@ export function getValidatorEpochRewards(validatorId, limit = 100) {
   `).all(validatorId, Math.min(Math.max(limit, 1), 500));
 }
 
+/**
+ * Delegate and Undelegate rows for stake-flow aggregation.
+ *
+ * Only these two move stake. Withdraw is the delegator collecting funds that
+ * Undelegate already removed from the pool, and ClaimRewards is rewards, so
+ * counting either as outflow would double count. Amounts come back as wei
+ * strings and are summed with BigInt by the caller, since the totals exceed
+ * what a double holds exactly.
+ */
+export function getStakeFlowRows(validatorId, sinceTs) {
+  const where = ["event_type IN ('Delegate', 'Undelegate')"];
+  const params = [];
+  if (validatorId != null) {
+    where.push("validator_id = ?");
+    params.push(validatorId);
+  }
+  if (sinceTs != null) {
+    where.push("block_ts >= ?");
+    params.push(sinceTs);
+  }
+  return db.prepare(`
+    SELECT validator_id, event_type, address, amount_wei
+    FROM staking_events
+    WHERE ${where.join(" AND ")}
+  `).all(...params);
+}
+
+/** Oldest and newest raw round in the rolling window. */
+export function getUptimeEventBounds() {
+  return db.prepare(
+    "SELECT MIN(timestamp) as oldest, MAX(timestamp) as newest, COUNT(*) as count FROM uptime_events"
+  ).get();
+}
+
 export function getIndexerStats() {
   const events = db.prepare("SELECT COUNT(*) as c FROM staking_events").get().c;
   const rewardRows = db.prepare("SELECT COUNT(*) as c FROM validator_rewards_epoch").get().c;

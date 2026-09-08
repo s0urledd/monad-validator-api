@@ -19,6 +19,7 @@ import {
   getStakingEvents,
   getValidatorEpochRewards,
   getIndexerStats,
+  getStakeFlowRows,
 } from "./db.js";
 
 const router = Router();
@@ -259,6 +260,132 @@ router.get("/validator/:valId/rewards", (req, res) => {
           last_block: r.last_block,
         };
       }),
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ---------- Stake Flow ----------
+
+const FLOW_PERIODS = { "24h": 86400, "7d": 7 * 86400, "30d": 30 * 86400, all: null };
+
+function flowSince(req) {
+  const period = req.query.period || "7d";
+  if (!(period in FLOW_PERIODS)) return { error: period };
+  const secs = FLOW_PERIODS[period];
+  return { period, since: secs === null ? null : Math.floor(Date.now() / 1000) - secs };
+}
+
+// Net stake movement from indexed Delegate and Undelegate events. Sums run in
+// BigInt because a single validator's inflow can exceed the exact range of a
+// double once it is expressed in wei.
+function aggregateFlow(rows) {
+  const acc = new Map();
+  for (const r of rows) {
+    let a = acc.get(r.validator_id);
+    if (!a) {
+      a = { inWei: 0n, outWei: 0n, delegations: 0, undelegations: 0, delegators: new Set() };
+      acc.set(r.validator_id, a);
+    }
+    const amt = BigInt(r.amount_wei || "0");
+    if (r.event_type === "Delegate") {
+      a.inWei += amt;
+      a.delegations++;
+      a.delegators.add(r.address);
+    } else {
+      a.outWei += amt;
+      a.undelegations++;
+    }
+  }
+  return acc;
+}
+
+function formatFlow(a) {
+  return {
+    inflow: toMON(a.inWei),
+    outflow: toMON(a.outWei),
+    net: toMON(a.inWei - a.outWei),
+    delegations: a.delegations,
+    undelegations: a.undelegations,
+    unique_delegators: a.delegators.size,
+  };
+}
+
+// GET /monad-api/staking/flow
+router.get("/flow", (req, res) => {
+  try {
+    const f = flowSince(req);
+    if (f.error) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid period",
+        hint: `Use one of: ${Object.keys(FLOW_PERIODS).join(", ")}`,
+      });
+    }
+
+    const acc = aggregateFlow(getStakeFlowRows(null, f.since));
+    const network = { inWei: 0n, outWei: 0n, delegations: 0, undelegations: 0, delegators: new Set() };
+    const validators = [];
+
+    for (const [id, a] of acc) {
+      network.inWei += a.inWei;
+      network.outWei += a.outWei;
+      network.delegations += a.delegations;
+      network.undelegations += a.undelegations;
+      for (const d of a.delegators) network.delegators.add(d);
+      const v = getValidatorById(id);
+      validators.push({
+        validator_id: id,
+        name: v?.name || `Validator #${id}`,
+        ...formatFlow(a),
+      });
+    }
+
+    // Largest net movement first, in either direction.
+    validators.sort((x, y) => Math.abs(y.net) - Math.abs(x.net));
+
+    res.json({
+      success: true,
+      period: f.period,
+      indexer: getIndexerStats(),
+      network: formatFlow(network),
+      count: validators.length,
+      validators,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /monad-api/staking/validator/:valId/flow
+router.get("/validator/:valId/flow", (req, res) => {
+  try {
+    const valId = parseInt(req.params.valId);
+    if (isNaN(valId) || valId <= 0) {
+      return res.status(400).json({ success: false, error: "Invalid validator ID" });
+    }
+    const f = flowSince(req);
+    if (f.error) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid period",
+        hint: `Use one of: ${Object.keys(FLOW_PERIODS).join(", ")}`,
+      });
+    }
+
+    const acc = aggregateFlow(getStakeFlowRows(valId, f.since));
+    const a = acc.get(valId) || {
+      inWei: 0n, outWei: 0n, delegations: 0, undelegations: 0, delegators: new Set(),
+    };
+    const v = getValidatorById(valId);
+
+    res.json({
+      success: true,
+      validator_id: valId,
+      validator_name: v?.name || `Validator #${valId}`,
+      period: f.period,
+      flow: formatFlow(a),
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
