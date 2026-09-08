@@ -201,6 +201,7 @@ router.get("/validator/:valId/events", (req, res) => {
     res.json({
       success: true,
       validator_id: valId,
+      indexer: getIndexerStats(),
       count: events.length,
       events: events.map(formatEvent),
     });
@@ -236,6 +237,7 @@ router.get("/validator/:valId/rewards", (req, res) => {
     res.json({
       success: true,
       validator_id: valId,
+      indexer: getIndexerStats(),
       epochs_covered: rows.length,
       blocks_proposed: blocks,
       block_reward: BLOCK_REWARD_MON,
@@ -385,6 +387,7 @@ router.get("/validator/:valId/flow", (req, res) => {
       validator_id: valId,
       validator_name: v?.name || `Validator #${valId}`,
       period: f.period,
+      indexer: getIndexerStats(),
       flow: formatFlow(a),
     });
   } catch (err) {
