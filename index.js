@@ -231,11 +231,7 @@ app.get("/monad-api/status", (req, res) => {
               at_utc: health.last_error.ts ? new Date(health.last_error.ts * 1000).toISOString() : null,
             }
           : null,
-        gaps: health.gaps.map((g) => ({
-          from_block: g.from_block,
-          to_block: g.to_block,
-          skipped_at_utc: g.ts ? new Date(g.ts * 1000).toISOString() : null,
-        })),
+        gaps: idx.gaps,
       },
     });
   } catch (err) {

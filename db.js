@@ -895,6 +895,14 @@ export function getIndexerStats() {
     reward_rows: rewardRows,
     first_event_block: range?.first ?? null,
     last_event_block: range?.last ?? null,
+    // Ranges the indexer skipped. Anything derived from events (flow, rewards,
+    // the event lists) is silently short over these blocks, so every response
+    // that carries indexer stats carries the gaps with them.
+    gaps: getIndexerGaps().map((g) => ({
+      from_block: g.from_block,
+      to_block: g.to_block,
+      skipped_at_utc: g.ts ? new Date(g.ts * 1000).toISOString() : null,
+    })),
   };
 }
 

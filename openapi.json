@@ -903,7 +903,7 @@
           "Events"
         ],
         "summary": "Indexed staking events",
-        "description": "Events emitted by the staking precompile, captured as they occur. The chain keeps no queryable history of them, so anything not captured live is unrecoverable.\n\n`ValidatorRewarded` is excluded here: it fires once per block, and is aggregated per validator per epoch under the rewards endpoint instead.",
+        "description": "Events emitted by the staking precompile, captured as they occur. The chain keeps no queryable history of them, so anything not captured live is unrecoverable.\n\n`ValidatorRewarded` is excluded here: it fires once per block, and is aggregated per validator per epoch under the rewards endpoint instead.\n\nThe `indexer` block reports what the event store covers. `gaps` lists block ranges the indexer had to skip because the node no longer served their logs; figures over those blocks are missing, not zero, and `/monad-api/status` carries the same list.",
         "operationId": "listEvents",
         "parameters": [
           {
@@ -943,7 +943,8 @@
                     "events": 128,
                     "reward_rows": 1400,
                     "first_event_block": 58171961,
-                    "last_event_block": 58204410
+                    "last_event_block": 58204410,
+                    "gaps": []
                   },
                   "count": 1,
                   "events": [
@@ -1007,6 +1008,13 @@
                 "example": {
                   "success": true,
                   "validator_id": 42,
+                  "indexer": {
+                    "events": 128,
+                    "reward_rows": 1400,
+                    "first_event_block": 58171961,
+                    "last_event_block": 58204410,
+                    "gaps": []
+                  },
                   "count": 1,
                   "events": [
                     {
@@ -1029,7 +1037,8 @@
           "429": {
             "$ref": "#/components/responses/RateLimited"
           }
-        }
+        },
+        "description": "Events emitted by the staking precompile for one validator, newest first.\n\nThe `indexer` block reports what the event store covers. `gaps` lists block ranges the indexer had to skip because the node no longer served their logs; figures over those blocks are missing, not zero, and `/monad-api/status` carries the same list."
       }
     },
     "/monad-api/staking/validator/{valId}/rewards": {
@@ -1038,7 +1047,7 @@
           "Events"
         ],
         "summary": "Block rewards per epoch",
-        "description": "Rolled up from `ValidatorRewarded`, which fires once per block.\n\nThe event carries the delegators' share, not the whole block reward: the amount is `REWARD x (1 - commission)`, confirmed against every commission rate on the network. So `delegator_rewards` is measured, while `gross_rewards` and `commission_rewards` are derived on the assumption that each block paid exactly `block_reward`. That assumption holds for most epochs but not all, so the response names the derived fields.\n\n`blocks_proposed` counts reward events observed, which is how many blocks the validator led while the indexer was running.",
+        "description": "Rolled up from `ValidatorRewarded`, which fires once per block.\n\nThe event carries the delegators' share, not the whole block reward: the amount is `REWARD x (1 - commission)`, confirmed against every commission rate on the network. So `delegator_rewards` is measured, while `gross_rewards` and `commission_rewards` are derived on the assumption that each block paid exactly `block_reward`. That assumption holds for most epochs but not all, so the response names the derived fields.\n\n`blocks_proposed` counts reward events observed, which is how many blocks the validator led while the indexer was running.\n\nThe `indexer` block reports what the event store covers. `gaps` lists block ranges the indexer had to skip because the node no longer served their logs; figures over those blocks are missing, not zero, and `/monad-api/status` carries the same list.",
         "operationId": "getValidatorRewards",
         "parameters": [
           {
@@ -1063,14 +1072,30 @@
                 "example": {
                   "success": true,
                   "validator_id": 1,
+                  "indexer": {
+                    "events": 128,
+                    "reward_rows": 1400,
+                    "first_event_block": 58171961,
+                    "last_event_block": 58204410,
+                    "gaps": []
+                  },
                   "epochs_covered": 1,
-                  "total_rewards": 396,
                   "blocks_proposed": 22,
+                  "block_reward": 18,
+                  "gross_rewards": 396,
+                  "delegator_rewards": 336.6,
+                  "commission_rewards": 59.4,
+                  "derived": [
+                    "gross_rewards",
+                    "commission_rewards"
+                  ],
                   "epochs": [
                     {
                       "epoch": 1164,
-                      "rewards": 396,
                       "blocks_proposed": 22,
+                      "gross_rewards": 396,
+                      "delegator_rewards": 336.6,
+                      "commission_rewards": 59.4,
                       "first_block": 58171962,
                       "last_block": 58172060
                     }
@@ -1094,7 +1119,7 @@
           "Events"
         ],
         "summary": "Stake flow across the network",
-        "description": "Net stake movement from indexed Delegate and Undelegate events. Only those two move stake: Withdraw is the delegator collecting funds Undelegate already removed, and ClaimRewards is rewards, so counting either would double count.\n\n`?period=24h|7d|30d|all`, default 7d. Sums run in BigInt and are returned in MON.\n\nSorted by absolute net movement, so the validators gaining or losing the most stake come first.",
+        "description": "Net stake movement from indexed Delegate and Undelegate events. Only those two move stake: Withdraw is the delegator collecting funds Undelegate already removed, and ClaimRewards is rewards, so counting either would double count.\n\n`?period=24h|7d|30d|all`, default 7d. Sums run in BigInt and are returned in MON.\n\nSorted by absolute net movement, so the validators gaining or losing the most stake come first.\n\nThe `indexer` block reports what the event store covers. `gaps` lists block ranges the indexer had to skip because the node no longer served their logs; figures over those blocks are missing, not zero, and `/monad-api/status` carries the same list.",
         "operationId": "stakeFlow",
         "parameters": [
           {
@@ -1120,6 +1145,13 @@
                 "example": {
                   "success": true,
                   "period": "7d",
+                  "indexer": {
+                    "events": 128,
+                    "reward_rows": 1400,
+                    "first_event_block": 58171961,
+                    "last_event_block": 58204410,
+                    "gaps": []
+                  },
                   "network": {
                     "inflow": 1840211.5,
                     "outflow": 622930.2,
@@ -1160,7 +1192,7 @@
           "Events"
         ],
         "summary": "Stake flow for one validator",
-        "description": "Net stake movement from indexed Delegate and Undelegate events. Only those two move stake: Withdraw is the delegator collecting funds Undelegate already removed, and ClaimRewards is rewards, so counting either would double count.\n\n`?period=24h|7d|30d|all`, default 7d. Sums run in BigInt and are returned in MON.",
+        "description": "Net stake movement from indexed Delegate and Undelegate events. Only those two move stake: Withdraw is the delegator collecting funds Undelegate already removed, and ClaimRewards is rewards, so counting either would double count.\n\n`?period=24h|7d|30d|all`, default 7d. Sums run in BigInt and are returned in MON.\n\nThe `indexer` block reports what the event store covers. `gaps` lists block ranges the indexer had to skip because the node no longer served their logs; figures over those blocks are missing, not zero, and `/monad-api/status` carries the same list.",
         "operationId": "validatorStakeFlow",
         "parameters": [
           {
@@ -1191,6 +1223,13 @@
                   "validator_id": 82,
                   "validator_name": "Huginn",
                   "period": "7d",
+                  "indexer": {
+                    "events": 128,
+                    "reward_rows": 1400,
+                    "first_event_block": 58171961,
+                    "last_event_block": 58204410,
+                    "gaps": []
+                  },
                   "flow": {
                     "inflow": 1423.25,
                     "outflow": 0,
