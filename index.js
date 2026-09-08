@@ -18,6 +18,7 @@ import {
   getValidatorCountsByStatus,
   getIndexerStats,
   getIndexerCursor,
+  getIndexerHealth,
   getLastSnapshotEpoch,
   getLastSnapshotTimestamp,
   getMeasuredBlockTime,
@@ -28,6 +29,9 @@ import { rateLimit } from "./rate-limit.js";
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "0.0.0.0";
 const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();
+
+// Ten missed indexer polls at the default 30s interval.
+const INDEXER_STALL_SECONDS = 300;
 
 // ---------- Logging ----------
 const logLevels = { error: 0, warn: 1, info: 2, debug: 3 };
@@ -186,7 +190,12 @@ app.get("/monad-api/status", (req, res) => {
     const bounds = getUptimeEventBounds();
     const cursor = getIndexerCursor("staking_events_last_block");
     const idx = getIndexerStats();
+    const health = getIndexerHealth();
     const blockTime = getMeasuredBlockTime();
+
+    // The indexer polls every 30s, so ten missed polls is not a hiccup.
+    const sinceSuccess = health.last_success_ts ? now - health.last_success_ts : null;
+    const stalled = sinceSuccess === null ? null : sinceSuccess > INDEXER_STALL_SECONDS;
 
     res.json({
       success: true,
@@ -211,6 +220,22 @@ app.get("/monad-api/status", (req, res) => {
         reward_rows: idx.reward_rows,
         first_event_block: idx.first_event_block,
         last_event_block: idx.last_event_block,
+        last_success_utc: health.last_success_ts
+          ? new Date(health.last_success_ts * 1000).toISOString()
+          : null,
+        seconds_since_success: sinceSuccess,
+        stalled,
+        last_error: health.last_error
+          ? {
+              message: health.last_error.message,
+              at_utc: health.last_error.ts ? new Date(health.last_error.ts * 1000).toISOString() : null,
+            }
+          : null,
+        gaps: health.gaps.map((g) => ({
+          from_block: g.from_block,
+          to_block: g.to_block,
+          skipped_at_utc: g.ts ? new Date(g.ts * 1000).toISOString() : null,
+        })),
       },
     });
   } catch (err) {
