@@ -10,11 +10,12 @@
 Validator uptime, VDP compliance and on-chain staking data for Monad, served
 as read-only REST.
 
-Uptime is read from a validator node's own consensus log, because that is the
+Uptime is read from the consensus log of our own nodes, because that is the
 only place block authorship appears. None of Monad's three real-time data
 sources carry the proposer, and the staking precompile reports only who is
-proposing right now, with no history. Running this alongside a validator is
-therefore not an implementation detail — it is what makes the dataset possible.
+proposing right now, with no history. Running this next to a node that
+follows consensus is therefore not an implementation detail — it is what
+makes the dataset possible.
 
 Live: [validator-api.huginn.tech](https://validator-api.huginn.tech) ·
 [testnet](https://validator-api-testnet.huginn.tech)
