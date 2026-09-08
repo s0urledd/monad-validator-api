@@ -1238,7 +1238,7 @@
           "System"
         ],
         "summary": "Data freshness",
-        "description": "How current each dataset is: the newest raw round, the last epoch snapshot, and the event indexer's cursor. Read entirely from SQLite, so it answers \"is the data current\" even when the node is unreachable.",
+        "description": "How current each dataset is: the newest raw round, the last epoch snapshot, and the event indexer's cursor. Read entirely from SQLite, so it answers \"is the data current\" even when the node is unreachable.\n\n`event_indexer.stalled` is true when no indexer run has succeeded for five minutes; `last_error` is the most recent failure. `gaps` lists block ranges the indexer skipped because the node no longer served their logs, so events in those ranges are absent from `/events`, `/flow` and `/rewards`.",
         "operationId": "status",
         "responses": {
           "200": {
@@ -1266,9 +1266,14 @@
                     "measured_block_time": 0.3024
                   },
                   "event_indexer": {
-                    "last_block": 101312173,
+                    "last_block": 103099910,
                     "events": 12611,
-                    "reward_rows": 3546
+                    "reward_rows": 3546,
+                    "last_success_utc": "2026-09-08T09:59:50.000Z",
+                    "seconds_since_success": 10,
+                    "stalled": false,
+                    "last_error": null,
+                    "gaps": []
                   }
                 }
               }

@@ -8,6 +8,9 @@ import {
   setIndexerCursor,
   commitIndexedRange,
   getIndexerStats,
+  markIndexerSuccess,
+  markIndexerError,
+  recordIndexerGap,
 } from "./db.js";
 
 const MONAD_RPC_URL = process.env.MONAD_RPC_URL || "http://127.0.0.1:8080";
@@ -23,6 +26,15 @@ const CHUNK_SIZE = Number(process.env.EVENT_INDEXER_CHUNK || 1000);
 // Stay this far behind the head so a reorg near the tip doesn't strand us with
 // events that never made it into the canonical chain.
 const CONFIRMATIONS = Number(process.env.EVENT_INDEXER_CONFIRMATIONS || 10);
+
+// A full node keeps roughly 17 hours of logs. If the cursor falls further
+// behind than that (the API was down, the node was resyncing) every getLogs on
+// the oldest chunk fails, the cursor never moves, and the indexer is stuck for
+// good while looking alive. When the first chunk of a run fails and the cursor
+// is more than this many blocks behind the head, the gap is recorded and the
+// cursor jumps to head minus this value. 150k blocks is about 12.5 hours at
+// 0.3s per block, comfortably inside what the node still serves.
+const MAX_LAG_BLOCKS = Number(process.env.EVENT_INDEXER_MAX_LAG || 150000);
 
 // Optional override to backfill from a specific block on first run.
 const START_BLOCK = process.env.EVENT_INDEXER_START_BLOCK
@@ -264,10 +276,36 @@ async function runOnce(provider) {
   }
 
   let totals = { logs: 0, stored: 0, rewardRows: 0, blocks: 0 };
+  let skipped = false;
 
   while (from <= safeHead) {
     const to = Math.min(from + CHUNK_SIZE - 1, safeHead);
-    const result = await indexRange(provider, from, to);
+
+    let result;
+    try {
+      result = await indexRange(provider, from, to);
+    } catch (err) {
+      // A transient RPC error, or a range the node can still serve: leave the
+      // cursor where it is and let the next tick retry from the same block.
+      const lag = safeHead - from;
+      if (skipped || lag <= MAX_LAG_BLOCKS) throw err;
+
+      // Beyond what the node retains. Retrying forever only keeps the
+      // indexer stuck, so give the range up, note it, and move on.
+      const resume = safeHead - MAX_LAG_BLOCKS;
+      recordIndexerGap(from, resume - 1);
+      setIndexerCursor(CURSOR_KEY, resume - 1);
+      log(
+        "warn",
+        `Chunk ${from}-${to} failed (${describeError(err)}) and the cursor is ${lag} blocks ` +
+          `behind the head, past what the node retains. Skipping to ${resume}; ` +
+          `blocks ${from}-${resume - 1} will not be indexed. ` +
+          `If this repeats, lower EVENT_INDEXER_MAX_LAG.`
+      );
+      skipped = true;
+      from = resume;
+      continue;
+    }
 
     totals.logs += result.logs;
     totals.stored += result.stored;
@@ -288,6 +326,12 @@ async function runOnce(provider) {
   }
 }
 
+// ethers wraps a JSON-RPC failure in a message that repeats the whole request
+// payload. The node's own message is the useful part.
+function describeError(err) {
+  return err?.error?.message || err?.shortMessage || err?.message || String(err);
+}
+
 // ---------- Scheduling ----------
 let _interval = null;
 let _running = false;
@@ -303,8 +347,11 @@ async function tick() {
   try {
     provider = new ethers.JsonRpcProvider(MONAD_RPC_URL);
     await runOnce(provider);
+    markIndexerSuccess();
   } catch (err) {
-    log("error", "Indexing failed:", err.message);
+    const message = describeError(err);
+    log("error", "Indexing failed:", message);
+    markIndexerError(message);
   } finally {
     if (provider) provider.destroy();
     _running = false;
@@ -322,7 +369,11 @@ export function startEventIndexer() {
 
   tick();
   _interval = setInterval(tick, POLL_MS);
-  log("info", `Polling every ${POLL_MS / 1000}s, ${CONFIRMATIONS} block confirmations`);
+  log(
+    "info",
+    `Polling every ${POLL_MS / 1000}s, ${CONFIRMATIONS} block confirmations, ` +
+      `max lag ${MAX_LAG_BLOCKS} blocks`
+  );
 }
 
 export function stopEventIndexer() {

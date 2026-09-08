@@ -155,6 +155,17 @@ there and the endpoints report `applies: false`. The distinction comes from
 the whole set turns one HTTP request into an unbounded number of RPC calls,
 which the staking documentation explicitly warns against.
 
+**The event indexer gives up on ranges it can no longer fetch.** A full node
+keeps roughly 17 hours of logs. If the service is down longer than that, the
+first `eth_getLogs` on the oldest missing chunk fails, and an indexer that
+simply retries would sit on the same block forever while reporting a
+perfectly valid cursor. Instead, when the cursor is more than
+`EVENT_INDEXER_MAX_LAG` blocks behind the head and that chunk fails, the range
+is recorded under `event_indexer.gaps` in `/monad-api/status` and indexing
+resumes from head minus the lag. `/monad-api/status` also carries
+`last_success_utc`, `stalled` and `last_error`, so a stuck indexer shows as
+stuck rather than as a number that happens not to change.
+
 ## Setup
 
 ```bash
@@ -220,6 +231,7 @@ One `location /` is enough — it covers the API, the docs, `/health` and
 | `EVENT_INDEXER_CHUNK` | `1000` | Blocks per `eth_getLogs` |
 | `EVENT_INDEXER_CONFIRMATIONS` | `10` | Blocks to stay behind the head |
 | `EVENT_INDEXER_START_BLOCK` | — | Backfill from here on first run |
+| `EVENT_INDEXER_MAX_LAG` | `150000` | Blocks behind head before a failing range is skipped |
 | `LOG_LEVEL` | `info` | |
 
 `NETWORK` decides three things: which directory metadata is pulled from,

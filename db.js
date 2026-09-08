@@ -822,6 +822,68 @@ export function getUptimeEventBounds() {
   ).get();
 }
 
+// ---------- Indexer health ----------
+//
+// The cursor alone cannot tell a healthy indexer from a stuck one: both leave
+// a number in indexer_state. These keys record the last successful run, the
+// last error, and any block ranges that were skipped, so /monad-api/status can
+// say "stalled" instead of leaving the operator to compare two snapshots.
+
+const HEALTH_KEYS = {
+  lastSuccess: "staking_events_last_success",
+  lastError: "staking_events_last_error",
+  gaps: "staking_events_gaps",
+};
+
+const MAX_RECORDED_GAPS = 20;
+
+export function markIndexerSuccess() {
+  setCursorStmt.run(HEALTH_KEYS.lastSuccess, String(Math.floor(Date.now() / 1000)));
+}
+
+export function markIndexerError(message) {
+  setCursorStmt.run(
+    HEALTH_KEYS.lastError,
+    JSON.stringify({ message: String(message).slice(0, 500), ts: Math.floor(Date.now() / 1000) })
+  );
+}
+
+/** Remember a block range the indexer gave up on, newest last. */
+export function recordIndexerGap(fromBlock, toBlock) {
+  const gaps = getIndexerGaps();
+  gaps.push({ from_block: fromBlock, to_block: toBlock, ts: Math.floor(Date.now() / 1000) });
+  setCursorStmt.run(HEALTH_KEYS.gaps, JSON.stringify(gaps.slice(-MAX_RECORDED_GAPS)));
+}
+
+export function getIndexerGaps() {
+  const raw = getIndexerCursor(HEALTH_KEYS.gaps);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function getIndexerHealth() {
+  const success = getIndexerCursor(HEALTH_KEYS.lastSuccess);
+  const errorRaw = getIndexerCursor(HEALTH_KEYS.lastError);
+  let lastError = null;
+  if (errorRaw) {
+    try {
+      lastError = JSON.parse(errorRaw);
+    } catch {
+      lastError = { message: errorRaw, ts: null };
+    }
+  }
+  return {
+    last_success_ts: success ? Number(success) : null,
+    last_error: lastError,
+    gaps: getIndexerGaps(),
+  };
+}
+
 export function getIndexerStats() {
   const events = db.prepare("SELECT COUNT(*) as c FROM staking_events").get().c;
   const rewardRows = db.prepare("SELECT COUNT(*) as c FROM validator_rewards_epoch").get().c;
