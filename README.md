@@ -255,17 +255,24 @@ archive RPC: every epoch since block rewards began, and any range the live
 indexer had to skip.
 
 ```bash
-npm run backfill                       # rpc1.monad.xyz by default
-npm run backfill -- --rpc <archive>    # testnet, or another archive
-npm run backfill -- --verify           # completeness report only
+# mainnet: rpc1 serves 5,000 blocks a request; about 50 minutes for all of it
+npm run backfill
+
+# testnet: its archives cap a request at 100 blocks, so spread the load
+npm run backfill -- --rpc https://rpc-testnet.monadinfra.com,https://testnet-rpc.monad.xyz \
+                   --chunk 100 --concurrency 10          # about 90 minutes
+
+npm run backfill -- --verify            # completeness report only
 ```
 
 It rebuilds one completed epoch at a time and replaces that epoch's rows in a
 single transaction, so it can be stopped and rerun freely, and a rerun only
-touches epochs that are missing or incomplete. It checks that the archive is
-on the same chain as `MONAD_RPC_URL` before writing anything, never touches
-the epoch the live indexer is in, and clears a recorded gap once the epochs
-covering it are complete. A full mainnet run is a few hours.
+touches epochs that are missing or incomplete. It checks that every archive
+is on the same chain as `MONAD_RPC_URL` before writing anything, never
+touches the epoch the live indexer is in, and clears a recorded gap once the
+epochs covering it are complete. Rate-limited requests are retried on the next
+archive in the list. The epoch that was live when the backfill ran is picked
+up by the next run, once it has closed.
 
 ## Environment
 
@@ -285,7 +292,7 @@ covering it are complete. A full mainnet run is a few hours.
 | `EVENT_INDEXER_CHUNK` | `1000` | Blocks per `eth_getLogs` |
 | `EVENT_INDEXER_CONFIRMATIONS` | `10` | Blocks to stay behind the head |
 | `EVENT_INDEXER_START_BLOCK` | — | Backfill from here on first run |
-| `ARCHIVE_RPC_URL` | `https://rpc1.monad.xyz` | Archive used by the backfill |
+| `ARCHIVE_RPC_URL` | `https://rpc1.monad.xyz` | Archive(s) for the backfill, comma separated |
 | `EVENT_INDEXER_EDGE_MARGIN` | `10000` | Blocks above the node's retention edge to resume from after a skip |
 | `LOG_LEVEL` | `info` | |
 

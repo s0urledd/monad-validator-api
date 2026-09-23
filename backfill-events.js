@@ -19,7 +19,8 @@
 // block in its span has one and every reward in it carries its epoch number.
 //
 // Usage:
-//   node backfill-events.js [--rpc URL] [--from-epoch N] [--concurrency N] [--all]
+//   node backfill-events.js [--rpc URL[,URL...]] [--chunk N] [--concurrency N]
+//                           [--from-epoch N] [--all]
 //     rebuilds every completed epoch that is missing or incomplete; --all
 //     rebuilds them regardless, --from-epoch sets the lowest one
 //   node backfill-events.js --verify
@@ -51,9 +52,18 @@ const arg = (name, fallback) => {
   const i = args.indexOf(`--${name}`);
   return i >= 0 ? args[i + 1] : fallback;
 };
-const RPC_URL = arg("rpc", process.env.ARCHIVE_RPC_URL || "https://rpc1.monad.xyz");
+// One or more archives, comma separated. Chunks are spread across them and a
+// failed chunk is retried on the next one, so a slow or rate-limited endpoint
+// does not stall the run.
+const RPC_URLS = arg("rpc", process.env.ARCHIVE_RPC_URL || "https://rpc1.monad.xyz")
+  .split(",")
+  .map((u) => u.trim())
+  .filter(Boolean);
+const RPC_URL = RPC_URLS[0];
+let nextUrl = 0;
+const pickUrl = () => RPC_URLS[nextUrl++ % RPC_URLS.length];
 const CHUNK = Number(arg("chunk", 5000));
-const CONCURRENCY = Number(arg("concurrency", 2));
+const CONCURRENCY = Number(arg("concurrency", 4));
 const FROM_EPOCH = arg("from-epoch", null);
 const VERIFY_ONLY = args.includes("--verify");
 const FORCE = args.includes("--all");
@@ -67,6 +77,8 @@ const hex = (n) => "0x" + Number(n).toString(16);
 async function rpc(url, method, params) {
   for (let attempt = 1; ; attempt++) {
     let body;
+    // After a transport failure, try the next archive rather than the same one.
+    if (attempt > 1 && url !== null && RPC_URLS.includes(url)) url = pickUrl();
     try {
       const res = await fetch(url, {
         method: "POST",
@@ -133,6 +145,8 @@ async function epochStartBlock(anchor, head, epoch) {
 
 // ---------- Fetching ----------
 
+let rateLimited = 0;
+
 async function fetchRange(from, to) {
   // Public archives cap the response size, and a busy stretch can exceed it
   // at a range that is fine elsewhere, so halve on that error. Anything else
@@ -144,13 +158,21 @@ async function fetchRange(from, to) {
   while (start <= to) {
     const end = Math.min(start + size - 1, to);
     try {
-      logs.push(...(await rpcGetLogs(RPC_URL, start, end)));
+      logs.push(...(await rpcGetLogs(pickUrl(), start, end)));
       start = end + 1;
       size = CHUNK;
       attempt = 0;
     } catch (err) {
       if (/size exceeded|too large|limited to|range/i.test(err.message) && size > 100) {
         size = Math.floor(size / 2);
+        continue;
+      }
+      // Rate limited: the next request goes to the next archive anyway, so a
+      // short pause is enough. Backing off for seconds here would stall every
+      // other request in the window behind this one.
+      if (/HTTP 429|too many requests|rate limit/i.test(err.message)) {
+        rateLimited += 1;
+        await sleep(200 + Math.random() * 300);
         continue;
       }
       if (++attempt >= 6) throw new Error(`Blocks ${start}-${end}: ${err.message}`);
@@ -160,14 +182,29 @@ async function fetchRange(from, to) {
   return logs;
 }
 
-/** CONCURRENCY consecutive chunks fetched side by side, returned in order. */
+/**
+ * Blocks from..to in CHUNK-sized requests, CONCURRENCY in flight at all times,
+ * returned in block order. A pool rather than fixed batches: with batches,
+ * every batch waits for its slowest request before the next one starts.
+ */
 async function fetchWindow(from, to) {
-  const parts = [];
-  for (let a = from; a <= to && parts.length < CONCURRENCY; a += CHUNK) {
-    parts.push(fetchRange(a, Math.min(a + CHUNK - 1, to)));
-  }
-  return (await Promise.all(parts)).flat();
+  const ranges = [];
+  for (let a = from; a <= to; a += CHUNK) ranges.push([a, Math.min(a + CHUNK - 1, to)]);
+  const results = new Array(ranges.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < ranges.length) {
+      const i = next++;
+      results[i] = await fetchRange(...ranges[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, ranges.length) }, worker));
+  return results.flat();
 }
+
+// Blocks read per pass. Large enough that the pool stays full, small enough
+// that a pass never holds more than a few epochs of logs in memory.
+const WINDOW_BLOCKS = 25000;
 
 // ---------- Rebuild ----------
 
@@ -205,8 +242,9 @@ async function rebuildRun(provider, anchor, head, fromEpoch, toEpoch, progress) 
     progress(epoch, epochFirst, lastBlock, r);
   };
 
-  for (let from = start; from <= end; from += CHUNK * CONCURRENCY) {
-    const to = Math.min(from + CHUNK * CONCURRENCY - 1, end);
+  const window = Math.max(WINDOW_BLOCKS, CHUNK * CONCURRENCY);
+  for (let from = start; from <= end; from += window) {
+    const to = Math.min(from + window - 1, end);
     buffer.push(...(await fetchWindow(from, to)));
 
     for (;;) {
@@ -268,7 +306,9 @@ function report(states, fromEpoch, toEpoch) {
 // ---------- Main ----------
 
 async function assertSameChain() {
-  const archiveId = parseInt(await rpc(RPC_URL, "eth_chainId", []), 16);
+  const ids = await Promise.all(RPC_URLS.map(async (u) => parseInt(await rpc(u, "eth_chainId", []), 16)));
+  if (new Set(ids).size > 1) throw new Error(`Archives disagree on the chain: ${RPC_URLS.map((u, i) => `${u}=${ids[i]}`).join(", ")}`);
+  const archiveId = ids[0];
   const localUrl = process.env.MONAD_RPC_URL || "http://127.0.0.1:8080";
   let localId;
   try {
@@ -301,14 +341,14 @@ async function main() {
   const chainId = await assertSameChain();
   const head = parseInt(await rpc(RPC_URL, "eth_blockNumber", []), 16) - 100;
   const anchor = await loadAnchor(head);
-  console.log(`Archive ${RPC_URL} (chain ${chainId}). Block rewards start at block ${anchor.block}, epoch ${anchor.epoch}.`);
+  console.log(`Archive ${RPC_URLS.join(", ")} (chain ${chainId}). Block rewards start at block ${anchor.block}, epoch ${anchor.epoch}.`);
 
   // Only epochs the live indexer has moved past: it keeps writing the one it
   // is in, and the two must never touch the same epoch.
   const liveEpoch = await epochAt(Number(liveCursor));
   if (liveEpoch === null) throw new Error(`No block reward at the live cursor ${liveCursor}.`);
   const lastEpoch = liveEpoch - 1;
-  const lowest = FROM_EPOCH !== null ? Number(FROM_EPOCH) : anchor.epoch;
+  const lowest = FROM_EPOCH !== null ? Math.max(Number(FROM_EPOCH), anchor.epoch) : anchor.epoch;
 
   // Rebuild what is not complete, so a plain rerun picks up exactly what is
   // left whatever was run before.
@@ -340,7 +380,8 @@ async function main() {
     console.log(
       `epoch ${epoch}  blocks ${first}-${last} (${last - first + 1})  ${r.events} events` +
         (r.external ? `  ${r.external} external rewards` : "") +
-        `  ${done}/${todo.length}, ~${left} min left`
+        `  ${done}/${todo.length}, ~${left} min left` +
+        (rateLimited ? `  (${rateLimited} rate-limited requests retried)` : "")
     );
   };
   try {

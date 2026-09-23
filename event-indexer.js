@@ -248,28 +248,33 @@ const BLOCK_REWARD_SENDER = "0x6f49a8f621353f12378d0046e7d7e4b9b249dc9e";
  * decoded entries for staking_events; ValidatorRewarded is rolled up per
  * (validator, epoch), with block rewards and external rewards kept apart.
  */
+const REWARD_TOPIC = iface.getEvent("ValidatorRewarded").topicHash;
+const SENDER_TOPIC = ethers.zeroPadValue(BLOCK_REWARD_SENDER, 32);
+
 function aggregateLogs(logs) {
   const decoded = [];
   const rewardMap = new Map();
 
   for (const logEntry of logs) {
-    let parsed;
-    try {
-      parsed = iface.parseLog({ topics: [...logEntry.topics], data: logEntry.data });
-    } catch {
-      continue; // event not in our ABI
-    }
-    if (!parsed) continue;
-
-    if (parsed.name !== "ValidatorRewarded") {
-      decoded.push({ parsed, logEntry });
+    // ValidatorRewarded is one event per block, so it is almost every log.
+    // Its layout is fixed (validatorId and from indexed; amount and epoch in
+    // data), and decoding it by hand is roughly a hundred times faster than
+    // ethers' generic parser, which took ten seconds an epoch on a backfill.
+    if (logEntry.topics[0] !== REWARD_TOPIC) {
+      let parsed;
+      try {
+        parsed = iface.parseLog({ topics: [...logEntry.topics], data: logEntry.data });
+      } catch {
+        continue; // event not in our ABI
+      }
+      if (parsed) decoded.push({ parsed, logEntry });
       continue;
     }
 
-    const validatorId = Number(parsed.args.validatorId);
-    const epoch = Number(parsed.args.epoch);
-    const amount = parsed.args.amount;
-    const isBlockReward = parsed.args.from.toLowerCase() === BLOCK_REWARD_SENDER;
+    const validatorId = Number(BigInt(logEntry.topics[1]));
+    const amount = BigInt("0x" + logEntry.data.slice(2, 66));
+    const epoch = Number(BigInt("0x" + logEntry.data.slice(66, 130)));
+    const isBlockReward = logEntry.topics[2].toLowerCase() === SENDER_TOPIC;
     const key = `${validatorId}:${epoch}`;
 
     let entry = rewardMap.get(key);
@@ -295,7 +300,8 @@ function aggregateLogs(logs) {
     if (isBlockReward) {
       entry.blockCount += 1;
       entry.blockWei += amount;
-      const mon = Number(ethers.formatEther(amount));
+      const mon = Number(amount / 10n ** 12n) / 1e6; // exact to 1e-6 MON
+
       entry.maxBlockReward = entry.maxBlockReward === null ? mon : Math.max(entry.maxBlockReward, mon);
     } else {
       entry.externalCount += 1;
