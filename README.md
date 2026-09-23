@@ -25,8 +25,8 @@ Live: [validator-api.huginn.tech](https://validator-api.huginn.tech) ·
 Raw rounds land in a 48-hour rolling window and are rolled up into permanent
 per-epoch snapshots before they age out, so 30-day, 90-day and all-time figures
 survive long after the events are gone. Staking precompile events are indexed
-as they are emitted, since the chain keeps no queryable history of them: a
-delegation or commission change not captured live is unrecoverable.
+as they are emitted, since a full node keeps only a few days of logs; older
+history is filled in from an archive node by the backfill.
 
 From that history the service computes VDP compliance — weekly uptime against
 the 98% line and strikes inside the rolling three-month window — which is
@@ -110,7 +110,8 @@ plain text for agents. All three come from the one document.
 | `GET /monad-api/staking/proposer` | Current block proposer |
 | `GET /monad-api/staking/validator/{id}` | Live stake, commission, pending changes |
 | `GET /monad-api/staking/validator/{id}/delegators` | Paginated. `?limit` `?cursor` |
-| `GET /monad-api/staking/validator/{id}/rewards` | Block rewards per epoch |
+| `GET /monad-api/staking/validator/{id}/rewards` | Block and external rewards per epoch |
+| `GET /monad-api/staking/blocks` | Blocks proposed per validator since rewards began. `?since_epoch` |
 | `GET /monad-api/staking/validator/{id}/events` | Indexed events for one validator |
 | `GET /monad-api/staking/events` | Network-wide. `?type` `?address` `?limit` |
 | `GET /monad-api/staking/delegator/{address}` | Every delegation an address holds |
@@ -180,6 +181,25 @@ node it never triggers.
 `last_error`, so a stuck indexer shows as stuck rather than as a number that
 happens not to change.
 
+**Not every reward is a block.** `ValidatorRewarded` fires once per block,
+sent by the system address `0x6f49…dc9e`, to pay the proposer. Anyone can also
+call `externalReward`, which emits the same event with the caller as sender;
+on mainnet that happens about a hundred times an epoch. Only the first kind
+counts as a proposed block. The two used to be summed together, which is why
+block counts ran slightly high.
+
+**The block reward is read from the chain, not assumed.** A block reward
+event carries `reward x (1 - commission)`, so the largest one in an epoch,
+paid to a validator at 0% commission, is the full reward. On mainnet that
+comes out as 0 when rewards began, 25 MON until mid-2026, and 18 MON since.
+Gross and commission figures use each epoch's own value.
+
+**Epochs are about 50,000 blocks, not exactly.** The new epoch starts after a
+delay counted in rounds, and a round that times out produces no block, so the
+boundary drifts by a block here and there. The archive backfill therefore
+closes an epoch at the first block reward tagged with the next one, and only
+stores it if every block in its span paid exactly one block reward.
+
 ## Setup
 
 ```bash
@@ -227,6 +247,26 @@ address past the limit.
 One `location /` is enough — it covers the API, the docs, `/health` and
 `/metrics`.
 
+## Backfilling history
+
+The live indexer reads forward from where it started, and a full node keeps
+only a few days of logs. `backfill-events.js` fills everything else from an
+archive RPC: every epoch since block rewards began, and any range the live
+indexer had to skip.
+
+```bash
+npm run backfill                       # rpc1.monad.xyz by default
+npm run backfill -- --rpc <archive>    # testnet, or another archive
+npm run backfill -- --verify           # completeness report only
+```
+
+It rebuilds one completed epoch at a time and replaces that epoch's rows in a
+single transaction, so it can be stopped and rerun freely, and a rerun only
+touches epochs that are missing or incomplete. It checks that the archive is
+on the same chain as `MONAD_RPC_URL` before writing anything, never touches
+the epoch the live indexer is in, and clears a recorded gap once the epochs
+covering it are complete. A full mainnet run is a few hours.
+
 ## Environment
 
 | Variable | Default | |
@@ -245,6 +285,7 @@ One `location /` is enough — it covers the API, the docs, `/health` and
 | `EVENT_INDEXER_CHUNK` | `1000` | Blocks per `eth_getLogs` |
 | `EVENT_INDEXER_CONFIRMATIONS` | `10` | Blocks to stay behind the head |
 | `EVENT_INDEXER_START_BLOCK` | — | Backfill from here on first run |
+| `ARCHIVE_RPC_URL` | `https://rpc1.monad.xyz` | Archive used by the backfill |
 | `EVENT_INDEXER_EDGE_MARGIN` | `10000` | Blocks above the node's retention edge to resume from after a skip |
 | `LOG_LEVEL` | `info` | |
 

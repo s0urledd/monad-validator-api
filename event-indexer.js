@@ -198,13 +198,57 @@ async function fetchBlockTimestamps(provider, blockNumbers) {
   return timestamps;
 }
 
-async function indexRange(provider, fromBlock, toBlock) {
-  const logs = await provider.getLogs({
-    address: STAKING_ADDRESS,
-    fromBlock,
-    toBlock,
+/**
+ * eth_getLogs over plain JSON-RPC. Monad returns blockTimestamp on every log,
+ * which ethers' Log object drops, and without it each sparse event would cost
+ * a separate getBlock call. That is a handful of calls live, but tens of
+ * thousands when backfilling months of history.
+ */
+async function rpcGetLogs(rpcUrl, fromBlock, toBlock) {
+  const res = await fetch(rpcUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "eth_getLogs",
+      params: [{ address: STAKING_ADDRESS, fromBlock: toHex(fromBlock), toBlock: toHex(toBlock) }],
+    }),
+    signal: AbortSignal.timeout(60000),
   });
+  let body;
+  try {
+    body = await res.json();
+  } catch {
+    throw new Error(`HTTP ${res.status} from eth_getLogs`);
+  }
+  if (body.error) throw new Error(body.error.message || JSON.stringify(body.error));
+  if (!Array.isArray(body.result)) throw new Error(`HTTP ${res.status}: eth_getLogs returned no result`);
 
+  return body.result.map((l) => ({
+    blockNumber: parseInt(l.blockNumber, 16),
+    index: parseInt(l.logIndex, 16),
+    transactionHash: l.transactionHash,
+    topics: l.topics,
+    data: l.data,
+    blockTimestamp: l.blockTimestamp ? parseInt(l.blockTimestamp, 16) : null,
+  }));
+}
+
+const toHex = (n) => "0x" + Number(n).toString(16);
+
+// System address that sends the per-block reward transaction. Checked on
+// mainnet across its whole history and on testnet. externalReward calls emit
+// the same event with the caller as `from`, so this is what separates "this
+// validator proposed a block" from "someone sent this validator MON".
+const BLOCK_REWARD_SENDER = "0x6f49a8f621353f12378d0046e7d7e4b9b249dc9e";
+
+/**
+ * Decode a batch of staking precompile logs. Sparse events come back as
+ * decoded entries for staking_events; ValidatorRewarded is rolled up per
+ * (validator, epoch), with block rewards and external rewards kept apart.
+ */
+function aggregateLogs(logs) {
   const decoded = [];
   const rewardMap = new Map();
 
@@ -217,44 +261,74 @@ async function indexRange(provider, fromBlock, toBlock) {
     }
     if (!parsed) continue;
 
-    if (parsed.name === "ValidatorRewarded") {
-      const validatorId = Number(parsed.args.validatorId);
-      const epoch = Number(parsed.args.epoch);
-      const key = `${validatorId}:${epoch}`;
-      const entry = rewardMap.get(key);
-      if (entry) {
-        entry.amountWei += parsed.args.amount;
-        entry.count += 1;
-        entry.lastBlock = Math.max(entry.lastBlock, logEntry.blockNumber);
-        entry.firstBlock = Math.min(entry.firstBlock, logEntry.blockNumber);
-      } else {
-        rewardMap.set(key, {
-          validatorId,
-          epoch,
-          amountWei: parsed.args.amount,
-          count: 1,
-          firstBlock: logEntry.blockNumber,
-          lastBlock: logEntry.blockNumber,
-        });
-      }
+    if (parsed.name !== "ValidatorRewarded") {
+      decoded.push({ parsed, logEntry });
       continue;
     }
 
-    decoded.push({ parsed, logEntry });
+    const validatorId = Number(parsed.args.validatorId);
+    const epoch = Number(parsed.args.epoch);
+    const amount = parsed.args.amount;
+    const isBlockReward = parsed.args.from.toLowerCase() === BLOCK_REWARD_SENDER;
+    const key = `${validatorId}:${epoch}`;
+
+    let entry = rewardMap.get(key);
+    if (!entry) {
+      entry = {
+        validatorId,
+        epoch,
+        amountWei: 0n,
+        count: 0,
+        blockCount: 0,
+        blockWei: 0n,
+        maxBlockReward: null,
+        externalCount: 0,
+        externalWei: 0n,
+        firstBlock: logEntry.blockNumber,
+        lastBlock: logEntry.blockNumber,
+      };
+      rewardMap.set(key, entry);
+    }
+
+    entry.amountWei += amount;
+    entry.count += 1;
+    if (isBlockReward) {
+      entry.blockCount += 1;
+      entry.blockWei += amount;
+      const mon = Number(ethers.formatEther(amount));
+      entry.maxBlockReward = entry.maxBlockReward === null ? mon : Math.max(entry.maxBlockReward, mon);
+    } else {
+      entry.externalCount += 1;
+      entry.externalWei += amount;
+    }
+    entry.firstBlock = Math.min(entry.firstBlock, logEntry.blockNumber);
+    entry.lastBlock = Math.max(entry.lastBlock, logEntry.blockNumber);
   }
 
-  const blockNumbers = new Set(decoded.map((d) => d.logEntry.blockNumber));
-  const timestamps = blockNumbers.size
-    ? await fetchBlockTimestamps(provider, blockNumbers)
-    : new Map();
+  return { decoded, rewards: [...rewardMap.values()] };
+}
+
+/** Rows for staking_events, falling back to getBlock only for logs that
+ *  arrived without a timestamp. */
+async function eventRows(provider, decoded) {
+  const missing = new Set(
+    decoded.filter((d) => d.logEntry.blockTimestamp == null).map((d) => d.logEntry.blockNumber)
+  );
+  const fetched = missing.size ? await fetchBlockTimestamps(provider, missing) : new Map();
 
   const rows = [];
   for (const { parsed, logEntry } of decoded) {
-    const row = toEventRow(parsed, logEntry, timestamps.get(logEntry.blockNumber));
+    const ts = logEntry.blockTimestamp ?? fetched.get(logEntry.blockNumber);
+    const row = toEventRow(parsed, logEntry, ts);
     if (row) rows.push(row);
   }
+  return rows;
+}
 
-  const rewards = [...rewardMap.values()];
+async function indexRange(provider, fromBlock, toBlock) {
+  const logs = await rpcGetLogs(MONAD_RPC_URL, fromBlock, toBlock);
+  const { decoded, rewards } = aggregateLogs(logs);
+  const rows = await eventRows(provider, decoded);
 
   // Writes and cursor advance together, so a crash cannot double count rewards.
   commitIndexedRange(rows, rewards, CURSOR_KEY, toBlock);
@@ -451,4 +525,4 @@ if (isMain) {
     });
 }
 
-export { runOnce, findRetentionEdge };
+export { runOnce, findRetentionEdge, rpcGetLogs, aggregateLogs, eventRows, BLOCK_REWARD_SENDER };

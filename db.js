@@ -134,6 +134,26 @@ for (const col of [
   }
 }
 
+// ValidatorRewarded fires for two different things. Once per block, sent by
+// the system address, it pays the block's proposer; that one is what makes a
+// row count as a proposed block. Anyone can also call externalReward, which
+// emits the same event with the caller as `from`. Rows written before these
+// columns existed have NULL block_count: the split is unknown until the epoch
+// is rebuilt from an archive (backfill-events.js).
+for (const col of [
+  "block_count INTEGER",
+  "block_reward_wei TEXT",
+  "max_block_reward REAL",
+  "external_count INTEGER NOT NULL DEFAULT 0",
+  "external_wei TEXT NOT NULL DEFAULT '0'",
+]) {
+  try {
+    db.exec(`ALTER TABLE validator_rewards_epoch ADD COLUMN ${col}`);
+  } catch (e) {
+    // Column already exists
+  }
+}
+
 // ---------- Validator CRUD ----------
 export function upsertValidator(data) {
   const stmt = db.prepare(`
@@ -702,22 +722,57 @@ const insertEventStmt = db.prepare(`
 `);
 
 const getRewardStmt = db.prepare(`
-  SELECT reward_wei, event_count FROM validator_rewards_epoch
+  SELECT reward_wei, event_count, block_count, block_reward_wei, max_block_reward,
+         external_count, external_wei, first_block, last_block
+  FROM validator_rewards_epoch
   WHERE validator_id = ? AND epoch = ?
 `);
 
-// first_block is deliberately absent from the UPDATE clause so the earliest
-// block we ever saw for this (validator, epoch) survives later batches.
-const upsertRewardStmt = db.prepare(`
-  INSERT INTO validator_rewards_epoch
-    (validator_id, epoch, reward_wei, event_count, first_block, last_block, updated_at)
-  VALUES (?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
-  ON CONFLICT(validator_id, epoch) DO UPDATE SET
-    reward_wei = excluded.reward_wei,
-    event_count = excluded.event_count,
-    last_block = excluded.last_block,
-    updated_at = strftime('%s', 'now')
+const writeRewardStmt = db.prepare(`
+  INSERT OR REPLACE INTO validator_rewards_epoch
+    (validator_id, epoch, reward_wei, event_count, block_count, block_reward_wei,
+     max_block_reward, external_count, external_wei, first_block, last_block, updated_at)
+  VALUES (@validatorId, @epoch, @rewardWei, @eventCount, @blockCount, @blockRewardWei,
+          @maxBlockReward, @externalCount, @externalWei, @firstBlock, @lastBlock,
+          strftime('%s', 'now'))
 `);
+
+function rewardRow(r) {
+  return {
+    validatorId: r.validatorId,
+    epoch: r.epoch,
+    rewardWei: r.amountWei.toString(),
+    eventCount: r.count,
+    blockCount: r.blockCount,
+    blockRewardWei: r.blockWei === null ? null : r.blockWei.toString(),
+    maxBlockReward: r.maxBlockReward,
+    externalCount: r.externalCount,
+    externalWei: r.externalWei.toString(),
+    firstBlock: r.firstBlock,
+    lastBlock: r.lastBlock,
+  };
+}
+
+/** Add a batch's rewards to what the row already holds. */
+function mergeReward(existing, r) {
+  if (!existing) return r;
+  // A row from before the split columns existed cannot be split after the
+  // fact; it stays unknown until the epoch is rebuilt from an archive.
+  const legacy = existing.block_count === null;
+  return {
+    ...r,
+    amountWei: BigInt(existing.reward_wei) + r.amountWei,
+    count: existing.event_count + r.count,
+    blockCount: legacy ? null : existing.block_count + r.blockCount,
+    blockWei: legacy ? null : BigInt(existing.block_reward_wei) + r.blockWei,
+    maxBlockReward: legacy ? null : Math.max(existing.max_block_reward ?? 0, r.maxBlockReward ?? 0),
+    externalCount: existing.external_count + r.externalCount,
+    externalWei: BigInt(existing.external_wei) + r.externalWei,
+    // Ranges can arrive out of order, so the bounds widen rather than move.
+    firstBlock: Math.min(existing.first_block ?? r.firstBlock, r.firstBlock),
+    lastBlock: Math.max(existing.last_block ?? r.lastBlock, r.lastBlock),
+  };
+}
 
 /**
  * Commit one indexed block range atomically.
@@ -734,20 +789,61 @@ export const commitIndexedRange = db.transaction((events, rewards, cursorKey, cu
 
   for (const r of rewards) {
     const existing = getRewardStmt.get(r.validatorId, r.epoch);
-    const total = (existing ? BigInt(existing.reward_wei) : 0n) + r.amountWei;
-    const count = (existing ? existing.event_count : 0) + r.count;
-    upsertRewardStmt.run(
-      r.validatorId,
-      r.epoch,
-      total.toString(),
-      count,
-      r.firstBlock,
-      r.lastBlock
-    );
+    writeRewardStmt.run(rewardRow(mergeReward(existing, r)));
   }
 
   setCursorStmt.run(cursorKey, String(cursorValue));
 });
+
+/**
+ * Replace everything stored for one completed epoch with a fresh read of it.
+ * Used by the archive backfill: because the epoch is replaced whole rather
+ * than added to, running it twice gives the same result as running it once.
+ * Events are keyed by (block, log index), so re-inserting them is a no-op.
+ */
+export const replaceEpochRewards = db.transaction((epoch, events, rewards, cursorKey) => {
+  db.prepare("DELETE FROM validator_rewards_epoch WHERE epoch = ?").run(epoch);
+  for (const e of events) insertEventStmt.run(e);
+  for (const r of rewards) writeRewardStmt.run(rewardRow(r));
+  setCursorStmt.run(cursorKey, String(epoch));
+});
+
+/**
+ * The block reward for each epoch, as observed. A ValidatorRewarded from the
+ * system address carries the delegators' share, reward x (1 - commission), so
+ * the largest one in an epoch is the full reward, paid to a validator at 0%
+ * commission. Every epoch sampled on mainnet has hundreds of those. This is
+ * how the reward schedule (0, then 25, then 18 MON on mainnet) comes out of
+ * the data rather than a constant.
+ */
+export function getEpochBlockRewards(epochs) {
+  if (!epochs.length) return new Map();
+  const rows = db.prepare(`
+    SELECT epoch, MAX(max_block_reward) AS reward
+    FROM validator_rewards_epoch
+    WHERE epoch IN (${epochs.map(() => "?").join(",")}) AND block_count > 0
+    GROUP BY epoch
+  `).all(...epochs);
+  return new Map(rows.map((r) => [r.epoch, r.reward]));
+}
+
+/** Blocks proposed per validator across every epoch whose split is known. */
+export function getBlocksProposedTotals(sinceEpoch = null) {
+  const where = ["block_count IS NOT NULL"];
+  const params = [];
+  if (sinceEpoch != null) {
+    where.push("epoch >= ?");
+    params.push(sinceEpoch);
+  }
+  return db.prepare(`
+    SELECT validator_id, SUM(block_count) AS blocks, MIN(epoch) AS first_epoch,
+           MAX(epoch) AS last_epoch, COUNT(*) AS epochs_with_blocks
+    FROM validator_rewards_epoch
+    WHERE ${where.join(" AND ")} AND block_count > 0
+    GROUP BY validator_id
+    ORDER BY blocks DESC
+  `).all(...params);
+}
 
 export function getStakingEvents({ validatorId, address, eventType, limit = 50 } = {}) {
   const where = [];
@@ -780,7 +876,8 @@ export function getStakingEvents({ validatorId, address, eventType, limit = 50 }
 
 export function getValidatorEpochRewards(validatorId, limit = 100) {
   return db.prepare(`
-    SELECT epoch, reward_wei, event_count, first_block, last_block
+    SELECT epoch, reward_wei, event_count, block_count, block_reward_wei,
+           external_count, external_wei, first_block, last_block
     FROM validator_rewards_epoch
     WHERE validator_id = ?
     ORDER BY epoch DESC
@@ -853,6 +950,30 @@ export function recordIndexerGap(fromBlock, toBlock) {
   const gaps = getIndexerGaps();
   gaps.push({ from_block: fromBlock, to_block: toBlock, ts: Math.floor(Date.now() / 1000) });
   setCursorStmt.run(HEALTH_KEYS.gaps, JSON.stringify(gaps.slice(-MAX_RECORDED_GAPS)));
+}
+
+/** Drop a recorded gap once a backfill has filled it. */
+export function clearIndexerGap(fromBlock, toBlock) {
+  const gaps = getIndexerGaps().filter(
+    (g) => !(g.from_block === fromBlock && g.to_block === toBlock)
+  );
+  setCursorStmt.run(HEALTH_KEYS.gaps, JSON.stringify(gaps));
+}
+
+/**
+ * Blocks with a recorded proposer, per epoch. Every block pays exactly one
+ * block reward, so a fully indexed epoch sums to its length in blocks. NULL
+ * blocks means some row in the epoch predates the block/external split.
+ */
+export function getBlocksPerEpoch() {
+  return db.prepare(`
+    SELECT epoch,
+           CASE WHEN SUM(block_count IS NULL) > 0 THEN NULL ELSE SUM(block_count) END AS blocks,
+           MIN(first_block) AS first_block, MAX(last_block) AS last_block
+    FROM validator_rewards_epoch
+    GROUP BY epoch
+    ORDER BY epoch
+  `).all();
 }
 
 export function getIndexerGaps() {

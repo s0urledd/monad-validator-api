@@ -20,6 +20,9 @@ import {
   getValidatorEpochRewards,
   getIndexerStats,
   getStakeFlowRows,
+  getEpochBlockRewards,
+  getBlocksProposedTotals,
+  getBlocksPerEpoch,
 } from "./db.js";
 
 const router = Router();
@@ -211,6 +214,40 @@ router.get("/validator/:valId/events", (req, res) => {
 });
 
 // GET /monad-api/staking/validator/:valId/rewards
+// ValidatorRewarded carries the delegators' share of a block reward, not the
+// whole reward: the amount is reward x (1 - commission). The gross figure and
+// the validator's commission are therefore derived, using the block reward
+// observed for that epoch rather than a constant, since it has changed over
+// the chain's life (0, then 25, then 18 MON on mainnet).
+const monToWei = (mon) => BigInt(Math.round(mon * 1e6)) * 10n ** 12n;
+
+function epochRewardView(r, blockReward) {
+  const base = {
+    epoch: r.epoch,
+    first_block: r.first_block,
+    last_block: r.last_block,
+  };
+  if (r.block_count === null) {
+    // Indexed before block and external rewards were told apart, and not yet
+    // rebuilt from an archive. The total is right; the split is unknown.
+    return { ...base, split_known: false, reward_events: r.event_count, total_rewards: toMON(r.reward_wei) };
+  }
+  const delegator = BigInt(r.block_reward_wei);
+  const gross = blockReward == null ? null : BigInt(r.block_count) * monToWei(blockReward);
+  return {
+    ...base,
+    split_known: true,
+    blocks_proposed: r.block_count,
+    block_reward: blockReward,
+    gross_rewards: gross === null ? null : toMON(gross),
+    delegator_rewards: toMON(delegator),
+    commission_rewards: gross === null ? null : toMON(gross - delegator),
+    external_rewards: toMON(r.external_wei),
+    external_reward_count: r.external_count,
+  };
+}
+
+// GET /monad-api/staking/validator/:valId/rewards
 router.get("/validator/:valId/rewards", (req, res) => {
   try {
     const valId = parseInt(req.params.valId);
@@ -219,49 +256,92 @@ router.get("/validator/:valId/rewards", (req, res) => {
     }
 
     const rows = getValidatorEpochRewards(valId, Number(req.query.limit) || 100);
+    const rewardByEpoch = getEpochBlockRewards(rows.map((r) => r.epoch));
+    const epochs = rows.map((r) => epochRewardView(r, rewardByEpoch.get(r.epoch)));
 
-    // ValidatorRewarded carries the delegators' share, not the whole block
-    // reward: the amount is REWARD x (1 - commission), verified against every
-    // commission rate on the network. The gross figure and the validator's own
-    // commission income are therefore derived rather than observed.
-    const grossWei = (blocks) => BigInt(blocks) * BigInt(BLOCK_REWARD_MON) * 10n ** 18n;
-
-    let delegatorWei = 0n;
-    let blocks = 0;
+    const totals = { blocks: 0, gross: 0n, delegator: 0n, external: 0n, externalCount: 0 };
     for (const r of rows) {
-      delegatorWei += BigInt(r.reward_wei);
-      blocks += r.event_count;
+      if (r.block_count === null) continue;
+      totals.blocks += r.block_count;
+      totals.delegator += BigInt(r.block_reward_wei);
+      totals.external += BigInt(r.external_wei);
+      totals.externalCount += r.external_count;
+      const reward = rewardByEpoch.get(r.epoch);
+      if (reward != null) totals.gross += BigInt(r.block_count) * monToWei(reward);
     }
-    const totalGross = grossWei(blocks);
+    const allTime = getBlocksProposedTotals().find((t) => t.validator_id === valId) || null;
 
     res.json({
       success: true,
       validator_id: valId,
       indexer: getIndexerStats(),
       epochs_covered: rows.length,
-      blocks_proposed: blocks,
-      block_reward: BLOCK_REWARD_MON,
-      gross_rewards: toMON(totalGross),
-      delegator_rewards: toMON(delegatorWei),
-      commission_rewards: toMON(totalGross - delegatorWei),
-      // Only delegator_rewards is measured. The other two assume every block
-      // paid exactly block_reward, which holds for most epochs but not all:
-      // observed per-block shares occasionally fall a little short of the flat
-      // rate, so treat them as estimates rather than accounting.
+      epochs_split_unknown: rows.filter((r) => r.block_count === null).length,
+      blocks_proposed: totals.blocks,
+      gross_rewards: toMON(totals.gross),
+      delegator_rewards: toMON(totals.delegator),
+      commission_rewards: toMON(totals.gross - totals.delegator),
+      external_rewards: toMON(totals.external),
+      external_reward_count: totals.externalCount,
       derived: ["gross_rewards", "commission_rewards"],
-      epochs: rows.map((r) => {
-        const gross = grossWei(r.event_count);
-        const delegator = BigInt(r.reward_wei);
-        return {
-          epoch: r.epoch,
-          blocks_proposed: r.event_count,
-          gross_rewards: toMON(gross),
-          delegator_rewards: toMON(delegator),
-          commission_rewards: toMON(gross - delegator),
-          first_block: r.first_block,
-          last_block: r.last_block,
-        };
-      }),
+      all_time: allTime && {
+        blocks_proposed: allTime.blocks,
+        first_epoch: allTime.first_epoch,
+        last_epoch: allTime.last_epoch,
+      },
+      epochs,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /monad-api/staking/blocks
+// Blocks proposed per validator, from the block reward each block pays its
+// proposer. These are finalized blocks: a round that timed out produced no
+// block and appears nowhere here, which is why this is not an uptime figure.
+router.get("/blocks", (req, res) => {
+  try {
+    const since = req.query.since_epoch != null ? parseInt(req.query.since_epoch) : null;
+    if (req.query.since_epoch != null && (isNaN(since) || since < 0)) {
+      return res.status(400).json({ success: false, error: "since_epoch must be a non-negative integer" });
+    }
+
+    const perEpoch = getBlocksPerEpoch();
+    const known = perEpoch.filter((e) => e.blocks !== null && (since == null || e.epoch >= since));
+    const unsplit = perEpoch.filter((e) => e.blocks === null && (since == null || e.epoch >= since)).map((e) => e.epoch);
+
+    const validators = getBlocksProposedTotals(since).map((t) => ({
+      validator_id: t.validator_id,
+      name: getValidatorById(t.validator_id)?.name || `Validator #${t.validator_id}`,
+      blocks_proposed: t.blocks,
+      first_epoch: t.first_epoch,
+      last_epoch: t.last_epoch,
+      epochs_with_blocks: t.epochs_with_blocks,
+    }));
+
+    // Epochs with no rows at all between the first and the last one held.
+    // A full backfill leaves none; until then the totals undercount.
+    const first = known.length ? known[0].epoch : null;
+    const last = known.length ? known[known.length - 1].epoch : null;
+    const held = new Set(perEpoch.map((e) => e.epoch));
+    const missing = [];
+    if (first !== null) for (let ep = first; ep <= last; ep++) if (!held.has(ep)) missing.push(ep);
+
+    res.json({
+      success: true,
+      coverage: {
+        first_epoch: first,
+        last_epoch: last,
+        total_blocks: known.reduce((s, e) => s + e.blocks, 0),
+        epochs_missing: missing.length,
+        complete: first !== null && missing.length === 0 && unsplit.length === 0,
+        // Epochs indexed before block and external rewards were told apart.
+        // They are left out of the counts until rebuilt from an archive.
+        epochs_not_split: unsplit,
+      },
+      count: validators.length,
+      validators,
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });

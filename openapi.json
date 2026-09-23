@@ -4,7 +4,7 @@
     "title": "Monad Validator & Staking API",
     "version": "2.1.0",
     "summary": "Validator metadata, uptime history, VDP compliance and on-chain staking data for Monad.",
-    "description": "A REST API over Monad validator data.\n\nUptime is derived from the consensus logs of our own nodes, which is the only way to attribute rounds to a proposer: none of Monad's three real-time data sources carry the block author, and the staking precompile's `getProposerValId` reports only the current proposer with no history.\n\nRaw rounds are kept in a 48 hour rolling window and rolled up into permanent per-epoch snapshots, so long-range figures survive the window. Staking precompile events are indexed as they are emitted, because the chain keeps no queryable history of them.\n\nNo authentication. Staking endpoints are rate limited per IP.\n\nResponse examples throughout this document are illustrative. They show the shape of each payload, not the live state of whichever network you are reading them on, and the figures in them are not comparable between deployments. Call the endpoint for current values.",
+    "description": "A REST API over Monad validator data.\n\nUptime is derived from the consensus logs of our own nodes, which is the only way to attribute rounds to a proposer: none of Monad's three real-time data sources carry the block author, and the staking precompile's `getProposerValId` reports only the current proposer with no history.\n\nRaw rounds are kept in a 48 hour rolling window and rolled up into permanent per-epoch snapshots, so long-range figures survive the window. Staking precompile events are indexed as they are emitted, and older history is filled in from an archive node.\n\nNo authentication. Staking endpoints are rate limited per IP.\n\nResponse examples throughout this document are illustrative. They show the shape of each payload, not the live state of whichever network you are reading them on, and the figures in them are not comparable between deployments. Call the endpoint for current values.",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -903,7 +903,7 @@
           "Events"
         ],
         "summary": "Indexed staking events",
-        "description": "Events emitted by the staking precompile, captured as they occur. The chain keeps no queryable history of them, so anything not captured live is unrecoverable.\n\n`ValidatorRewarded` is excluded here: it fires once per block, and is aggregated per validator per epoch under the rewards endpoint instead.\n\nThe `indexer` block reports what the event store covers. `gaps` lists block ranges the indexer had to skip because the node no longer served their logs; figures over those blocks are missing, not zero, and `/monad-api/status` carries the same list.",
+        "description": "Events emitted by the staking precompile. The live indexer captures them as they occur; a full node keeps only a few days of logs, so older history comes from an archive node via the backfill.\n\n`ValidatorRewarded` is excluded here: it fires once per block, and is aggregated per validator per epoch under the rewards endpoint instead.\n\nThe `indexer` block reports what the event store covers. `gaps` lists block ranges the indexer had to skip because the node no longer served their logs; figures over those blocks are missing, not zero, and `/monad-api/status` carries the same list.",
         "operationId": "listEvents",
         "parameters": [
           {
@@ -1047,7 +1047,7 @@
           "Events"
         ],
         "summary": "Block rewards per epoch",
-        "description": "Rolled up from `ValidatorRewarded`, which fires once per block.\n\nThe event carries the delegators' share, not the whole block reward: the amount is `REWARD x (1 - commission)`, confirmed against every commission rate on the network. So `delegator_rewards` is measured, while `gross_rewards` and `commission_rewards` are derived on the assumption that each block paid exactly `block_reward`. That assumption holds for most epochs but not all, so the response names the derived fields.\n\n`blocks_proposed` counts reward events observed, which is how many blocks the validator led while the indexer was running.\n\nThe `indexer` block reports what the event store covers. `gaps` lists block ranges the indexer had to skip because the node no longer served their logs; figures over those blocks are missing, not zero, and `/monad-api/status` carries the same list.",
+        "description": "Rolled up per epoch from `ValidatorRewarded`.\n\nThat event fires for two different things. Once per block, sent by the system address `0x6f49a8f621353f12378d0046e7d7e4b9b249dc9e`, it pays the block's proposer: those are counted in `blocks_proposed`. Anyone can also call `externalReward`, which emits the same event with the caller as sender: those are reported separately as `external_rewards` and never counted as blocks.\n\nA block reward event carries the delegators' share, `reward x (1 - commission)`, so `delegator_rewards` is measured while `gross_rewards` and `commission_rewards` are derived. The block reward used is the one observed for that epoch, the largest block reward paid in it, which a 0% commission validator receives in full. It has changed over the chain's life (0, then 25, then 18 MON on mainnet), so no constant is assumed.\n\n`all_time` counts every epoch held, regardless of `limit`. Epochs indexed before block and external rewards were told apart carry `split_known: false` until rebuilt from an archive.\n\nThe `indexer` block reports what the event store covers. `gaps` lists block ranges the indexer had to skip because the node no longer served their logs; figures over those blocks are missing, not zero, and `/monad-api/status` carries the same list.",
         "operationId": "getValidatorRewards",
         "parameters": [
           {
@@ -1071,7 +1071,7 @@
               "application/json": {
                 "example": {
                   "success": true,
-                  "validator_id": 1,
+                  "validator_id": 24,
                   "indexer": {
                     "events": 128,
                     "reward_rows": 1400,
@@ -1080,24 +1080,93 @@
                     "gaps": []
                   },
                   "epochs_covered": 1,
-                  "blocks_proposed": 22,
-                  "block_reward": 18,
-                  "gross_rewards": 396,
-                  "delegator_rewards": 336.6,
-                  "commission_rewards": 59.4,
+                  "epochs_split_unknown": 0,
+                  "blocks_proposed": 48,
+                  "gross_rewards": 1200,
+                  "delegator_rewards": 960,
+                  "commission_rewards": 240,
+                  "external_rewards": 4.43,
+                  "external_reward_count": 1,
                   "derived": [
                     "gross_rewards",
                     "commission_rewards"
                   ],
+                  "all_time": {
+                    "blocks_proposed": 251340,
+                    "first_epoch": 675,
+                    "last_epoch": 2146
+                  },
                   "epochs": [
                     {
-                      "epoch": 1164,
-                      "blocks_proposed": 22,
-                      "gross_rewards": 396,
-                      "delegator_rewards": 336.6,
-                      "commission_rewards": 59.4,
-                      "first_block": 58171962,
-                      "last_block": 58172060
+                      "epoch": 1200,
+                      "first_block": 59955084,
+                      "last_block": 60004506,
+                      "split_known": true,
+                      "blocks_proposed": 48,
+                      "block_reward": 25,
+                      "gross_rewards": 1200,
+                      "delegator_rewards": 960,
+                      "commission_rewards": 240,
+                      "external_rewards": 4.43,
+                      "external_reward_count": 1
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/monad-api/staking/blocks": {
+      "get": {
+        "tags": [
+          "Events"
+        ],
+        "summary": "Blocks proposed per validator",
+        "operationId": "blocksProposed",
+        "description": "Finalized blocks each validator proposed, counted from the block reward every block pays its proposer. On mainnet block rewards start at block 33,704,999 (epoch 675, 5 November 2025), and with the archive backfill run the count covers every block since.\n\nThese are blocks that made it into the chain. A round that timed out produced no block and appears nowhere here, so this is a count of work done, not an uptime figure: uptime needs the timeouts, which only the consensus log records.\n\n`coverage` says what the totals rest on. `epochs_missing` counts epochs between the first and last held that have no rows, and `epochs_not_split` lists epochs indexed before block and external rewards were told apart; both are excluded from the totals, so `complete: false` means the totals undercount.\n\n`?since_epoch=N` restricts the count to epochs from N onward.",
+        "parameters": [
+          {
+            "name": "since_epoch",
+            "in": "query",
+            "description": "Only count epochs from this one onward.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Validators by blocks proposed, most first.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "coverage": {
+                    "first_epoch": 675,
+                    "last_epoch": 2146,
+                    "total_blocks": 73585377,
+                    "epochs_missing": 0,
+                    "complete": true,
+                    "epochs_not_split": []
+                  },
+                  "count": 1,
+                  "validators": [
+                    {
+                      "validator_id": 42,
+                      "name": "Validator #42",
+                      "blocks_proposed": 250000,
+                      "first_epoch": 700,
+                      "last_epoch": 2146,
+                      "epochs_with_blocks": 1400
                     }
                   ]
                 }
