@@ -10,6 +10,7 @@
     "sync": "node github-sync.js",
     "status-sync": "node status-sync.js",
     "index-events": "node event-indexer.js",
+    "backfill": "node backfill-events.js",
     "dev": "node --watch index.js"
   },
   "dependencies": {

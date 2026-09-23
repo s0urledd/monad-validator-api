@@ -27,14 +27,19 @@ const CHUNK_SIZE = Number(process.env.EVENT_INDEXER_CHUNK || 1000);
 // events that never made it into the canonical chain.
 const CONFIRMATIONS = Number(process.env.EVENT_INDEXER_CONFIRMATIONS || 10);
 
-// A full node keeps roughly 17 hours of logs. If the cursor falls further
-// behind than that (the API was down, the node was resyncing) every getLogs on
-// the oldest chunk fails, the cursor never moves, and the indexer is stuck for
-// good while looking alive. When the first chunk of a run fails and the cursor
-// is more than this many blocks behind the head, the gap is recorded and the
-// cursor jumps to head minus this value. 150k blocks is about 12.5 hours at
-// 0.3s per block, comfortably inside what the node still serves.
-const MAX_LAG_BLOCKS = Number(process.env.EVENT_INDEXER_MAX_LAG || 150000);
+// A node that is not an archive node only serves logs for a window of recent
+// blocks, and the size of that window depends on the node's disk and
+// configuration, not on anything the chain defines. If the cursor falls behind
+// the window (the API was down, the node was resyncing), every getLogs on the
+// oldest chunk fails, and an indexer that simply retries stays stuck forever.
+//
+// When a chunk fails, the indexer therefore asks the node what it can serve
+// instead of guessing: it probes the failing block and a recent one, and if
+// only the old one fails it binary searches for the oldest block the node
+// still has. The skipped range is recorded as a gap and indexing resumes this
+// many blocks above the edge, since the node keeps pruning while we read.
+// Nothing here depends on the error text, which differs between clients.
+const EDGE_MARGIN_BLOCKS = Number(process.env.EVENT_INDEXER_EDGE_MARGIN || 10000);
 
 // Optional override to backfill from a specific block on first run.
 const START_BLOCK = process.env.EVENT_INDEXER_START_BLOCK
@@ -193,68 +198,193 @@ async function fetchBlockTimestamps(provider, blockNumbers) {
   return timestamps;
 }
 
-async function indexRange(provider, fromBlock, toBlock) {
-  const logs = await provider.getLogs({
-    address: STAKING_ADDRESS,
-    fromBlock,
-    toBlock,
+/**
+ * eth_getLogs over plain JSON-RPC. Monad returns blockTimestamp on every log,
+ * which ethers' Log object drops, and without it each sparse event would cost
+ * a separate getBlock call. That is a handful of calls live, but tens of
+ * thousands when backfilling months of history.
+ */
+async function rpcGetLogs(rpcUrl, fromBlock, toBlock) {
+  const res = await fetch(rpcUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "eth_getLogs",
+      params: [{ address: STAKING_ADDRESS, fromBlock: toHex(fromBlock), toBlock: toHex(toBlock) }],
+    }),
+    signal: AbortSignal.timeout(60000),
   });
+  let body;
+  try {
+    body = await res.json();
+  } catch {
+    throw new Error(`HTTP ${res.status} from eth_getLogs`);
+  }
+  if (body.error) throw new Error(body.error.message || JSON.stringify(body.error));
+  if (!Array.isArray(body.result)) throw new Error(`HTTP ${res.status}: eth_getLogs returned no result`);
 
+  return body.result.map((l) => ({
+    blockNumber: parseInt(l.blockNumber, 16),
+    index: parseInt(l.logIndex, 16),
+    transactionHash: l.transactionHash,
+    topics: l.topics,
+    data: l.data,
+    blockTimestamp: l.blockTimestamp ? parseInt(l.blockTimestamp, 16) : null,
+  }));
+}
+
+const toHex = (n) => "0x" + Number(n).toString(16);
+
+// System address that sends the per-block reward transaction. Checked on
+// mainnet across its whole history and on testnet. externalReward calls emit
+// the same event with the caller as `from`, so this is what separates "this
+// validator proposed a block" from "someone sent this validator MON".
+const BLOCK_REWARD_SENDER = "0x6f49a8f621353f12378d0046e7d7e4b9b249dc9e";
+
+/**
+ * Decode a batch of staking precompile logs. Sparse events come back as
+ * decoded entries for staking_events; ValidatorRewarded is rolled up per
+ * (validator, epoch), with block rewards and external rewards kept apart.
+ */
+const REWARD_TOPIC = iface.getEvent("ValidatorRewarded").topicHash;
+const SENDER_TOPIC = ethers.zeroPadValue(BLOCK_REWARD_SENDER, 32);
+
+function aggregateLogs(logs) {
   const decoded = [];
   const rewardMap = new Map();
 
   for (const logEntry of logs) {
-    let parsed;
-    try {
-      parsed = iface.parseLog({ topics: [...logEntry.topics], data: logEntry.data });
-    } catch {
-      continue; // event not in our ABI
-    }
-    if (!parsed) continue;
-
-    if (parsed.name === "ValidatorRewarded") {
-      const validatorId = Number(parsed.args.validatorId);
-      const epoch = Number(parsed.args.epoch);
-      const key = `${validatorId}:${epoch}`;
-      const entry = rewardMap.get(key);
-      if (entry) {
-        entry.amountWei += parsed.args.amount;
-        entry.count += 1;
-        entry.lastBlock = Math.max(entry.lastBlock, logEntry.blockNumber);
-        entry.firstBlock = Math.min(entry.firstBlock, logEntry.blockNumber);
-      } else {
-        rewardMap.set(key, {
-          validatorId,
-          epoch,
-          amountWei: parsed.args.amount,
-          count: 1,
-          firstBlock: logEntry.blockNumber,
-          lastBlock: logEntry.blockNumber,
-        });
+    // ValidatorRewarded is one event per block, so it is almost every log.
+    // Its layout is fixed (validatorId and from indexed; amount and epoch in
+    // data), and decoding it by hand is roughly a hundred times faster than
+    // ethers' generic parser, which took ten seconds an epoch on a backfill.
+    if (logEntry.topics[0] !== REWARD_TOPIC) {
+      let parsed;
+      try {
+        parsed = iface.parseLog({ topics: [...logEntry.topics], data: logEntry.data });
+      } catch {
+        continue; // event not in our ABI
       }
+      if (parsed) decoded.push({ parsed, logEntry });
       continue;
     }
 
-    decoded.push({ parsed, logEntry });
+    const validatorId = Number(BigInt(logEntry.topics[1]));
+    const amount = BigInt("0x" + logEntry.data.slice(2, 66));
+    const epoch = Number(BigInt("0x" + logEntry.data.slice(66, 130)));
+    const isBlockReward = logEntry.topics[2].toLowerCase() === SENDER_TOPIC;
+    const key = `${validatorId}:${epoch}`;
+
+    let entry = rewardMap.get(key);
+    if (!entry) {
+      entry = {
+        validatorId,
+        epoch,
+        amountWei: 0n,
+        count: 0,
+        blockCount: 0,
+        blockWei: 0n,
+        maxBlockReward: null,
+        externalCount: 0,
+        externalWei: 0n,
+        firstBlock: logEntry.blockNumber,
+        lastBlock: logEntry.blockNumber,
+      };
+      rewardMap.set(key, entry);
+    }
+
+    entry.amountWei += amount;
+    entry.count += 1;
+    if (isBlockReward) {
+      entry.blockCount += 1;
+      entry.blockWei += amount;
+      const mon = Number(amount / 10n ** 12n) / 1e6; // exact to 1e-6 MON
+
+      entry.maxBlockReward = entry.maxBlockReward === null ? mon : Math.max(entry.maxBlockReward, mon);
+    } else {
+      entry.externalCount += 1;
+      entry.externalWei += amount;
+    }
+    entry.firstBlock = Math.min(entry.firstBlock, logEntry.blockNumber);
+    entry.lastBlock = Math.max(entry.lastBlock, logEntry.blockNumber);
   }
 
-  const blockNumbers = new Set(decoded.map((d) => d.logEntry.blockNumber));
-  const timestamps = blockNumbers.size
-    ? await fetchBlockTimestamps(provider, blockNumbers)
-    : new Map();
+  return { decoded, rewards: [...rewardMap.values()] };
+}
+
+/** Rows for staking_events, falling back to getBlock only for logs that
+ *  arrived without a timestamp. */
+async function eventRows(provider, decoded) {
+  const missing = new Set(
+    decoded.filter((d) => d.logEntry.blockTimestamp == null).map((d) => d.logEntry.blockNumber)
+  );
+  const fetched = missing.size ? await fetchBlockTimestamps(provider, missing) : new Map();
 
   const rows = [];
   for (const { parsed, logEntry } of decoded) {
-    const row = toEventRow(parsed, logEntry, timestamps.get(logEntry.blockNumber));
+    const ts = logEntry.blockTimestamp ?? fetched.get(logEntry.blockNumber);
+    const row = toEventRow(parsed, logEntry, ts);
     if (row) rows.push(row);
   }
+  return rows;
+}
 
-  const rewards = [...rewardMap.values()];
+async function indexRange(provider, fromBlock, toBlock) {
+  const logs = await rpcGetLogs(MONAD_RPC_URL, fromBlock, toBlock);
+  const { decoded, rewards } = aggregateLogs(logs);
+  const rows = await eventRows(provider, decoded);
 
   // Writes and cursor advance together, so a crash cannot double count rewards.
   commitIndexedRange(rows, rewards, CURSOR_KEY, toBlock);
 
   return { logs: logs.length, stored: rows.length, rewardRows: rewards.length };
+}
+
+// ---------- Retention edge ----------
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Whether the node serves logs for one block. A failure is retried once after
+ * a pause, so a single dropped request is not mistaken for missing history.
+ * The pause also matters mechanically: ethers answers an identical request
+ * from cache for 250ms, so an immediate retry would never reach the node.
+ */
+async function logsServable(provider, block) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) await sleep(1000);
+    try {
+      await provider.getLogs({ address: STAKING_ADDRESS, fromBlock: block, toBlock: block });
+      return true;
+    } catch {
+      // fall through to the retry
+    }
+  }
+  return false;
+}
+
+/**
+ * The oldest block in [from, recent] the node still serves logs for, or null
+ * when the failure is not about retention: either `from` itself is served, or
+ * `recent` is not, which means the node is unwell rather than pruned.
+ *
+ * About twenty single-block calls for a window of a million blocks. The node
+ * could report this in its error instead; until it does, we ask.
+ */
+async function findRetentionEdge(provider, from, recent) {
+  if (await logsServable(provider, from)) return null;
+  if (!(await logsServable(provider, recent))) return null;
+
+  let lo = from; // not servable
+  let hi = recent; // servable
+  while (hi - lo > 1) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (await logsServable(provider, mid)) hi = mid;
+    else lo = mid;
+  }
+  return hi;
 }
 
 async function runOnce(provider) {
@@ -285,22 +415,24 @@ async function runOnce(provider) {
     try {
       result = await indexRange(provider, from, to);
     } catch (err) {
-      // A transient RPC error, or a range the node can still serve: leave the
-      // cursor where it is and let the next tick retry from the same block.
-      const lag = safeHead - from;
-      if (skipped || lag <= MAX_LAG_BLOCKS) throw err;
+      // Skip at most once per run, so a node that keeps failing surfaces as an
+      // error on /status instead of a trail of gaps.
+      if (skipped) throw err;
 
-      // Beyond what the node retains. Retrying forever only keeps the
-      // indexer stuck, so give the range up, note it, and move on.
-      const resume = safeHead - MAX_LAG_BLOCKS;
+      const edge = await findRetentionEdge(provider, from, safeHead);
+      // null: the old block is still served, or recent blocks are not either.
+      // Either way this is the node having a bad moment, not history running
+      // out, so leave the cursor alone and let the next tick retry.
+      if (edge === null) throw err;
+
+      const resume = Math.min(edge + EDGE_MARGIN_BLOCKS, safeHead);
       recordIndexerGap(from, resume - 1);
       setIndexerCursor(CURSOR_KEY, resume - 1);
       log(
         "warn",
-        `Chunk ${from}-${to} failed (${describeError(err)}) and the cursor is ${lag} blocks ` +
-          `behind the head, past what the node retains. Skipping to ${resume}; ` +
-          `blocks ${from}-${resume - 1} will not be indexed. ` +
-          `If this repeats, lower EVENT_INDEXER_MAX_LAG.`
+        `Chunk ${from}-${to} failed (${describeError(err)}). The node's oldest block ` +
+          `with logs is ${edge}, so blocks ${from}-${resume - 1} are no longer ` +
+          `available and will not be indexed. Resuming at ${resume}.`
       );
       skipped = true;
       from = resume;
@@ -372,7 +504,7 @@ export function startEventIndexer() {
   log(
     "info",
     `Polling every ${POLL_MS / 1000}s, ${CONFIRMATIONS} block confirmations, ` +
-      `max lag ${MAX_LAG_BLOCKS} blocks`
+      `${EDGE_MARGIN_BLOCKS} block margin above the node's retention edge`
   );
 }
 
@@ -399,4 +531,4 @@ if (isMain) {
     });
 }
 
-export { runOnce };
+export { runOnce, findRetentionEdge, rpcGetLogs, aggregateLogs, eventRows, BLOCK_REWARD_SENDER };
