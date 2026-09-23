@@ -158,16 +158,27 @@ there and the endpoints report `applies: false`. The distinction comes from
 the whole set turns one HTTP request into an unbounded number of RPC calls,
 which the staking documentation explicitly warns against.
 
-**The event indexer gives up on ranges it can no longer fetch.** A full node
-keeps roughly 17 hours of logs. If the service is down longer than that, the
-first `eth_getLogs` on the oldest missing chunk fails, and an indexer that
-simply retries would sit on the same block forever while reporting a
-perfectly valid cursor. Instead, when the cursor is more than
-`EVENT_INDEXER_MAX_LAG` blocks behind the head and that chunk fails, the range
-is recorded under `event_indexer.gaps` in `/monad-api/status` and indexing
-resumes from head minus the lag. `/monad-api/status` also carries
-`last_success_utc`, `stalled` and `last_error`, so a stuck indexer shows as
-stuck rather than as a number that happens not to change.
+**The event indexer finds out what the node still has.** A node that is not
+an archive node serves logs for a window of recent blocks, and the size of
+that window depends on its disk, not on the chain. On our mainnet node it is
+about 950,000 blocks, roughly 79 hours. If the service falls behind that
+window, the first `eth_getLogs` on the oldest missing chunk fails, and an
+indexer that simply retries sits on the same block forever while reporting a
+valid cursor.
+
+When a chunk fails, the indexer probes the failing block and a recent one. If
+only the old one fails, it binary searches for the oldest block the node still
+serves, about twenty calls, records the skipped range under
+`event_indexer.gaps` in `/monad-api/status`, and resumes
+`EVENT_INDEXER_EDGE_MARGIN` blocks above that edge. If the recent block fails
+too, the node is unwell rather than pruned, and the cursor stays put. None of
+this reads the error text, which differs between clients, and there is no
+retention size to configure, so it behaves the same on any node. On an archive
+node it never triggers.
+
+`/monad-api/status` also carries `last_success_utc`, `stalled` and
+`last_error`, so a stuck indexer shows as stuck rather than as a number that
+happens not to change.
 
 ## Setup
 
@@ -234,7 +245,7 @@ One `location /` is enough — it covers the API, the docs, `/health` and
 | `EVENT_INDEXER_CHUNK` | `1000` | Blocks per `eth_getLogs` |
 | `EVENT_INDEXER_CONFIRMATIONS` | `10` | Blocks to stay behind the head |
 | `EVENT_INDEXER_START_BLOCK` | — | Backfill from here on first run |
-| `EVENT_INDEXER_MAX_LAG` | `150000` | Blocks behind head before a failing range is skipped |
+| `EVENT_INDEXER_EDGE_MARGIN` | `10000` | Blocks above the node's retention edge to resume from after a skip |
 | `LOG_LEVEL` | `info` | |
 
 `NETWORK` decides three things: which directory metadata is pulled from,

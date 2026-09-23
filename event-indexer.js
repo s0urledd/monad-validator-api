@@ -27,14 +27,19 @@ const CHUNK_SIZE = Number(process.env.EVENT_INDEXER_CHUNK || 1000);
 // events that never made it into the canonical chain.
 const CONFIRMATIONS = Number(process.env.EVENT_INDEXER_CONFIRMATIONS || 10);
 
-// A full node keeps roughly 17 hours of logs. If the cursor falls further
-// behind than that (the API was down, the node was resyncing) every getLogs on
-// the oldest chunk fails, the cursor never moves, and the indexer is stuck for
-// good while looking alive. When the first chunk of a run fails and the cursor
-// is more than this many blocks behind the head, the gap is recorded and the
-// cursor jumps to head minus this value. 150k blocks is about 12.5 hours at
-// 0.3s per block, comfortably inside what the node still serves.
-const MAX_LAG_BLOCKS = Number(process.env.EVENT_INDEXER_MAX_LAG || 150000);
+// A node that is not an archive node only serves logs for a window of recent
+// blocks, and the size of that window depends on the node's disk and
+// configuration, not on anything the chain defines. If the cursor falls behind
+// the window (the API was down, the node was resyncing), every getLogs on the
+// oldest chunk fails, and an indexer that simply retries stays stuck forever.
+//
+// When a chunk fails, the indexer therefore asks the node what it can serve
+// instead of guessing: it probes the failing block and a recent one, and if
+// only the old one fails it binary searches for the oldest block the node
+// still has. The skipped range is recorded as a gap and indexing resumes this
+// many blocks above the edge, since the node keeps pruning while we read.
+// Nothing here depends on the error text, which differs between clients.
+const EDGE_MARGIN_BLOCKS = Number(process.env.EVENT_INDEXER_EDGE_MARGIN || 10000);
 
 // Optional override to backfill from a specific block on first run.
 const START_BLOCK = process.env.EVENT_INDEXER_START_BLOCK
@@ -257,6 +262,51 @@ async function indexRange(provider, fromBlock, toBlock) {
   return { logs: logs.length, stored: rows.length, rewardRows: rewards.length };
 }
 
+// ---------- Retention edge ----------
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Whether the node serves logs for one block. A failure is retried once after
+ * a pause, so a single dropped request is not mistaken for missing history.
+ * The pause also matters mechanically: ethers answers an identical request
+ * from cache for 250ms, so an immediate retry would never reach the node.
+ */
+async function logsServable(provider, block) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) await sleep(1000);
+    try {
+      await provider.getLogs({ address: STAKING_ADDRESS, fromBlock: block, toBlock: block });
+      return true;
+    } catch {
+      // fall through to the retry
+    }
+  }
+  return false;
+}
+
+/**
+ * The oldest block in [from, recent] the node still serves logs for, or null
+ * when the failure is not about retention: either `from` itself is served, or
+ * `recent` is not, which means the node is unwell rather than pruned.
+ *
+ * About twenty single-block calls for a window of a million blocks. The node
+ * could report this in its error instead; until it does, we ask.
+ */
+async function findRetentionEdge(provider, from, recent) {
+  if (await logsServable(provider, from)) return null;
+  if (!(await logsServable(provider, recent))) return null;
+
+  let lo = from; // not servable
+  let hi = recent; // servable
+  while (hi - lo > 1) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (await logsServable(provider, mid)) hi = mid;
+    else lo = mid;
+  }
+  return hi;
+}
+
 async function runOnce(provider) {
   const head = await provider.getBlockNumber();
   const safeHead = head - CONFIRMATIONS;
@@ -285,22 +335,24 @@ async function runOnce(provider) {
     try {
       result = await indexRange(provider, from, to);
     } catch (err) {
-      // A transient RPC error, or a range the node can still serve: leave the
-      // cursor where it is and let the next tick retry from the same block.
-      const lag = safeHead - from;
-      if (skipped || lag <= MAX_LAG_BLOCKS) throw err;
+      // Skip at most once per run, so a node that keeps failing surfaces as an
+      // error on /status instead of a trail of gaps.
+      if (skipped) throw err;
 
-      // Beyond what the node retains. Retrying forever only keeps the
-      // indexer stuck, so give the range up, note it, and move on.
-      const resume = safeHead - MAX_LAG_BLOCKS;
+      const edge = await findRetentionEdge(provider, from, safeHead);
+      // null: the old block is still served, or recent blocks are not either.
+      // Either way this is the node having a bad moment, not history running
+      // out, so leave the cursor alone and let the next tick retry.
+      if (edge === null) throw err;
+
+      const resume = Math.min(edge + EDGE_MARGIN_BLOCKS, safeHead);
       recordIndexerGap(from, resume - 1);
       setIndexerCursor(CURSOR_KEY, resume - 1);
       log(
         "warn",
-        `Chunk ${from}-${to} failed (${describeError(err)}) and the cursor is ${lag} blocks ` +
-          `behind the head, past what the node retains. Skipping to ${resume}; ` +
-          `blocks ${from}-${resume - 1} will not be indexed. ` +
-          `If this repeats, lower EVENT_INDEXER_MAX_LAG.`
+        `Chunk ${from}-${to} failed (${describeError(err)}). The node's oldest block ` +
+          `with logs is ${edge}, so blocks ${from}-${resume - 1} are no longer ` +
+          `available and will not be indexed. Resuming at ${resume}.`
       );
       skipped = true;
       from = resume;
@@ -372,7 +424,7 @@ export function startEventIndexer() {
   log(
     "info",
     `Polling every ${POLL_MS / 1000}s, ${CONFIRMATIONS} block confirmations, ` +
-      `max lag ${MAX_LAG_BLOCKS} blocks`
+      `${EDGE_MARGIN_BLOCKS} block margin above the node's retention edge`
   );
 }
 
@@ -399,4 +451,4 @@ if (isMain) {
     });
 }
 
-export { runOnce };
+export { runOnce, findRetentionEdge };
