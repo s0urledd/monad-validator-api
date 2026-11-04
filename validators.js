@@ -24,8 +24,20 @@ import {
   evaluateCompliance,
   commissionOf
 } from "./vdp.js";
+import { lightLimit, heavyLimit, memo, parseLimit, internalError } from "./guards.js";
 
 const router = Router();
+
+// Abuse ceilings only, far above what real clients send: every route here
+// allows 300 requests per second per IP, and the routes that aggregate over
+// the whole validator set allow 50.
+router.use(lightLimit);
+
+// How long the all-validator aggregates are reused. They are rebuilt from
+// SQLite, which the logger and the syncs keep writing, so a short reuse
+// window keeps them current while a burst of callers shares one computation.
+const UPTIME_CACHE_MS = 20_000;
+const AGGREGATE_CACHE_MS = 30_000;
 
 const CUMULATIVE_PERIODS = ["30d", "90d", "all"];
 
@@ -109,7 +121,7 @@ router.get("/", (req, res) => {
     // opt-in rather than a breaking change to the default response.
     const offset = Math.max(Number(req.query.offset) || 0, 0);
     const validators = req.query.limit
-      ? all.slice(offset, offset + Math.min(Math.max(Number(req.query.limit) || 50, 1), 500))
+      ? all.slice(offset, offset + parseLimit(req.query.limit, 50, 500))
       : all.slice(offset);
 
     res.json({
@@ -119,7 +131,7 @@ router.get("/", (req, res) => {
       validators: validators.map(formatValidator)
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    internalError(req, res, err);
   }
 });
 
@@ -140,7 +152,7 @@ router.get("/stats", (req, res) => {
       api_version: "1.0.0"
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    internalError(req, res, err);
   }
 });
 
@@ -196,7 +208,7 @@ router.get("/uptime/:idOrAddress", (req, res) => {
       uptime: formatUptime(stats, validator, lastEvent)
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    internalError(req, res, err);
   }
 });
 
@@ -204,7 +216,7 @@ router.get("/uptime/:idOrAddress", (req, res) => {
 router.get("/uptime/:idOrAddress/history", (req, res) => {
   try {
     const { idOrAddress } = req.params;
-    const limit = Math.min(Math.max(Number(req.query.limit) || 49, 1), 100);
+    const limit = parseLimit(req.query.limit, 49, 100);
     
     const validator = resolveValidator(idOrAddress);
     if (!validator) {
@@ -229,14 +241,49 @@ router.get("/uptime/:idOrAddress/history", (req, res) => {
       }))
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    internalError(req, res, err);
   }
 });
+
+// Every validator's cumulative uptime over a snapshot period, unsorted.
+function cumulativeUptimeRows(period) {
+  const byId = new Map(getAllValidators().map((v) => [v.id, v]));
+  return getAllCumulativeUptime(period).map((r) => {
+    const v = byId.get(r.validator_id);
+    return {
+      validator_id: r.validator_id,
+      validator_name: v?.name || `Validator #${r.validator_id}`,
+      secp_address: r.secp_address,
+      status: v?.status || "unknown",
+      finalized_count: r.finalized,
+      timeout_count: r.timeout,
+      total_events: r.total,
+      uptime_percent: r.uptime_percent
+    };
+  });
+}
+
+// Every validator's uptime over a rolling window, in validator ID order.
+function windowUptimeRows(windowHours) {
+  const bulk = getAllUptimeStats(windowHours);
+  return getAllValidators().map(v =>
+    formatUptime(
+      bulk.stats.get(v.id) || bulk.emptyStats,
+      v,
+      bulk.lastEvent.get(v.id) || null,
+      bulk.lastHeight.get(v.id) ?? null
+    )
+  );
+}
 
 // GET /monad-api/validators/uptime
 // ?period=30d|90d|all  -> cumulative, from permanent epoch snapshots
 // ?window=1-168        -> rolling window over raw events (default)
-router.get("/uptime", (req, res) => {
+//
+// Both forms aggregate over every validator, so the unsorted rows are cached
+// for a few seconds and shared; sorting and the limit are applied per request
+// to a copy.
+router.get("/uptime", heavyLimit, (req, res) => {
   try {
     const period = req.query.period;
     const windowHours = Math.min(Math.max(Number(req.query.window) || 24, 1), 168);
@@ -251,20 +298,9 @@ router.get("/uptime", (req, res) => {
         });
       }
 
-      const byId = new Map(getAllValidators().map((v) => [v.id, v]));
-      let rows = getAllCumulativeUptime(period).map((r) => {
-        const v = byId.get(r.validator_id);
-        return {
-          validator_id: r.validator_id,
-          validator_name: v?.name || `Validator #${r.validator_id}`,
-          secp_address: r.secp_address,
-          status: v?.status || "unknown",
-          finalized_count: r.finalized,
-          timeout_count: r.timeout,
-          total_events: r.total,
-          uptime_percent: r.uptime_percent
-        };
-      });
+      let rows = memo(`uptime:period:${period}`, UPTIME_CACHE_MS, () =>
+        cumulativeUptimeRows(period)
+      ).slice();
 
       if (sortBy === "id") {
         rows.sort((a, b) => a.validator_id - b.validator_id);
@@ -275,8 +311,7 @@ router.get("/uptime", (req, res) => {
       // Sorted by uptime and capped, this is the leaderboard.
       const total = rows.length;
       if (req.query.limit) {
-        const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 500);
-        rows = rows.slice(0, limit);
+        rows = rows.slice(0, parseLimit(req.query.limit, 50, 500));
       }
 
       return res.json({
@@ -288,17 +323,13 @@ router.get("/uptime", (req, res) => {
       });
     }
 
-    const validators = getAllValidators();
-    const bulk = getAllUptimeStats(windowHours);
-
-    let results = validators.map(v =>
-      formatUptime(
-        bulk.stats.get(v.id) || bulk.emptyStats,
-        v,
-        bulk.lastEvent.get(v.id) || null,
-        bulk.lastHeight.get(v.id) ?? null
-      )
-    );
+    // Whole-hour windows are what clients ask for and are cached. Any other
+    // window is computed on its own, so odd values cannot crowd the cache.
+    let results = (
+      Number.isInteger(windowHours)
+        ? memo(`uptime:window:${windowHours}`, UPTIME_CACHE_MS, () => windowUptimeRows(windowHours))
+        : windowUptimeRows(windowHours)
+    ).slice();
 
     if (sortBy === "uptime") {
       results.sort((a, b) => b.uptime_percent - a.uptime_percent);
@@ -308,8 +339,7 @@ router.get("/uptime", (req, res) => {
 
     const total = results.length;
     if (req.query.limit) {
-      const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 500);
-      results = results.slice(0, limit);
+      results = results.slice(0, parseLimit(req.query.limit, 50, 500));
     }
 
     res.json({
@@ -320,14 +350,14 @@ router.get("/uptime", (req, res) => {
       validators: results
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    internalError(req, res, err);
   }
 });
 
 // GET /monad-api/validators/network/uptime
 // Network-wide uptime per epoch, plus how many validators fell below the
 // VDP threshold in each one.
-router.get("/network/uptime", (req, res) => {
+router.get("/network/uptime", heavyLimit, (req, res) => {
   try {
     const period = req.query.period || "all";
     if (!CUMULATIVE_PERIODS.includes(period)) {
@@ -338,106 +368,114 @@ router.get("/network/uptime", (req, res) => {
       });
     }
 
-    const epochs = getNetworkUptimeByEpoch(period, UPTIME_THRESHOLD);
-
-    let finalized = 0;
-    let timeout = 0;
-    for (const e of epochs) {
-      finalized += e.finalized;
-      timeout += e.timeout;
-    }
-    const total = finalized + timeout;
-
-    res.json({
-      success: true,
-      period,
-      threshold: UPTIME_THRESHOLD,
-      summary: {
-        epochs: epochs.length,
-        finalized_count: finalized,
-        timeout_count: timeout,
-        total_events: total,
-        uptime_percent: total > 0 ? parseFloat(((finalized / total) * 100).toFixed(2)) : 0
-      },
-      epochs: epochs.map(e => ({
-        epoch: e.epoch,
-        validator_count: e.validator_count,
-        finalized_count: e.finalized,
-        timeout_count: e.timeout,
-        total_events: e.total,
-        uptime_percent: e.total > 0
-          ? parseFloat(((e.finalized / e.total) * 100).toFixed(2))
-          : 0,
-        below_threshold: e.below_threshold,
-        snapshot_ts: e.snapshot_ts,
-        snapshot_utc: toISO(e.snapshot_ts)
-      }))
-    });
+    res.json(memo(`network-uptime:${period}`, AGGREGATE_CACHE_MS, () => networkUptimeBody(period)));
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    internalError(req, res, err);
   }
 });
+
+function networkUptimeBody(period) {
+  const epochs = getNetworkUptimeByEpoch(period, UPTIME_THRESHOLD);
+
+  let finalized = 0;
+  let timeout = 0;
+  for (const e of epochs) {
+    finalized += e.finalized;
+    timeout += e.timeout;
+  }
+  const total = finalized + timeout;
+
+  return {
+    success: true,
+    period,
+    threshold: UPTIME_THRESHOLD,
+    summary: {
+      epochs: epochs.length,
+      finalized_count: finalized,
+      timeout_count: timeout,
+      total_events: total,
+      uptime_percent: total > 0 ? parseFloat(((finalized / total) * 100).toFixed(2)) : 0
+    },
+    epochs: epochs.map(e => ({
+      epoch: e.epoch,
+      validator_count: e.validator_count,
+      finalized_count: e.finalized,
+      timeout_count: e.timeout,
+      total_events: e.total,
+      uptime_percent: e.total > 0
+        ? parseFloat(((e.finalized / e.total) * 100).toFixed(2))
+        : 0,
+      below_threshold: e.below_threshold,
+      snapshot_ts: e.snapshot_ts,
+      snapshot_utc: toISO(e.snapshot_ts)
+    }))
+  };
+}
 
 // GET /monad-api/validators/vdp
 // Compliance status for every validator, worst first.
-router.get("/vdp", (req, res) => {
+router.get("/vdp", heavyLimit, (req, res) => {
   try {
-    const byValidator = new Map();
-    for (const row of getAllWeeklyUptime()) {
-      if (!byValidator.has(row.validator_id)) byValidator.set(row.validator_id, []);
-      byValidator.get(row.validator_id).push(row);
-    }
-
-    const validators = getAllValidators();
-    const results = [];
-
-    for (const v of validators) {
-      // A validator with no snapshots at all is the most insufficient case
-      // there is, so it belongs in the list rather than dropped from it.
-      const weeks = evaluateWeeks(byValidator.get(v.id) || []);
-      const verdict = evaluateCompliance(weeks, commissionOf(v));
-
-      results.push({
-        validator_id: v.id,
-        validator_name: v.name,
-        status: v.status || "unknown",
-        vdp_status: verdict.status,
-        strikes: verdict.uptime.strikes,
-        strikes_remaining: verdict.uptime.strikes_remaining,
-        commission: verdict.commission.current,
-        commission_compliant: verdict.commission.compliant,
-        weeks_in_window: verdict.coverage.weeks_in_window,
-        sufficient_data: verdict.coverage.sufficient,
-        // What we have seen across all recorded history, not just the window.
-        observed_weeks: verdict.observed.complete_weeks,
-        observed_weeks_below_threshold: verdict.observed.weeks_below_threshold,
-        observed_uptime_percent: verdict.observed.uptime_percent,
-        observed_since_utc: verdict.observed.since_utc
-      });
-    }
-
-    // Surface problems first: breaches, then at risk, then by strike count.
-    const rank = { breach: 0, at_risk: 1, insufficient_data: 2, compliant: 3 };
-    results.sort(
-      (a, b) => rank[a.vdp_status] - rank[b.vdp_status] || b.strikes - a.strikes
-    );
-
-    const summary = { breach: 0, at_risk: 0, insufficient_data: 0, compliant: 0 };
-    for (const r of results) summary[r.vdp_status]++;
-
-    res.json({
-      success: true,
-      rules: VDP_RULES,
-      applies: vdpApplies(),
-      note: vdpNote(),
-      summary,
-      count: results.length,
-      validators: results
-    });
+    res.json(memo("vdp", AGGREGATE_CACHE_MS, vdpBody));
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    internalError(req, res, err);
   }
 });
+
+function vdpBody() {
+  const byValidator = new Map();
+  for (const row of getAllWeeklyUptime()) {
+    if (!byValidator.has(row.validator_id)) byValidator.set(row.validator_id, []);
+    byValidator.get(row.validator_id).push(row);
+  }
+
+  const validators = getAllValidators();
+  const results = [];
+
+  for (const v of validators) {
+    // A validator with no snapshots at all is the most insufficient case
+    // there is, so it belongs in the list rather than dropped from it.
+    const weeks = evaluateWeeks(byValidator.get(v.id) || []);
+    const verdict = evaluateCompliance(weeks, commissionOf(v));
+
+    results.push({
+      validator_id: v.id,
+      validator_name: v.name,
+      status: v.status || "unknown",
+      vdp_status: verdict.status,
+      strikes: verdict.uptime.strikes,
+      strikes_remaining: verdict.uptime.strikes_remaining,
+      commission: verdict.commission.current,
+      commission_compliant: verdict.commission.compliant,
+      weeks_in_window: verdict.coverage.weeks_in_window,
+      sufficient_data: verdict.coverage.sufficient,
+      // What we have seen across all recorded history, not just the window.
+      observed_weeks: verdict.observed.complete_weeks,
+      observed_weeks_below_threshold: verdict.observed.weeks_below_threshold,
+      observed_uptime_percent: verdict.observed.uptime_percent,
+      observed_since_utc: verdict.observed.since_utc
+    });
+  }
+
+  // Surface problems first: breaches, then at risk, then by strike count.
+  const rank = { breach: 0, at_risk: 1, insufficient_data: 2, compliant: 3 };
+  results.sort(
+    (a, b) => rank[a.vdp_status] - rank[b.vdp_status] || b.strikes - a.strikes
+  );
+
+  const summary = { breach: 0, at_risk: 0, insufficient_data: 0, compliant: 0 };
+  for (const r of results) summary[r.vdp_status]++;
+
+  return {
+    success: true,
+    rules: VDP_RULES,
+    applies: vdpApplies(),
+    note: vdpNote(),
+    summary,
+    count: results.length,
+    validators: results
+  };
+}
 
 // GET /monad-api/validators/:idOrAddress/vdp
 router.get("/:idOrAddress/vdp", (req, res) => {
@@ -469,7 +507,7 @@ router.get("/:idOrAddress/vdp", (req, res) => {
       }
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    internalError(req, res, err);
   }
 });
 
@@ -533,7 +571,7 @@ router.get("/:idOrAddress/health", (req, res) => {
       }
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    internalError(req, res, err);
   }
 });
 
@@ -556,7 +594,7 @@ router.get("/:idOrAddress", (req, res) => {
       validator: formatValidator(validator)
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    internalError(req, res, err);
   }
 });
 

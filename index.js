@@ -4,6 +4,7 @@ dotenv.config();
 
 import express from "express";
 import cors from "cors";
+import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -25,9 +26,12 @@ import {
   getUptimeEventBounds,
 } from "./db.js";
 import { rateLimit } from "./rate-limit.js";
+import { heavyLimit, memo, internalError } from "./guards.js";
 
 const PORT = Number(process.env.PORT || 3000);
-const HOST = process.env.HOST || "0.0.0.0";
+// Loopback unless told otherwise: in production nginx is the only thing that
+// should reach this port.
+const HOST = process.env.HOST || "127.0.0.1";
 const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();
 
 // Ten missed indexer polls at the default 30s interval.
@@ -77,7 +81,8 @@ function llmsTxtFromSpec() {
     "## Conventions",
     "",
     "- Every endpoint is GET and returns JSON with a top-level `success` boolean.",
-    "- No authentication. Staking routes allow 60 requests per minute per IP and return `X-RateLimit-*` headers; validator routes are unmetered.",
+    "- No authentication. Per-IP limits are abuse ceilings: staking routes 60 requests per minute, the two delegator routes a further 60 per minute between them, validator routes 300 per second, and the all-validator routes, /metrics and /monad-api/status 50 per second. Limited routes return `X-RateLimit-*` headers and, past the limit, 429 with `Retry-After`.",
+    "- Errors carry a stable `code` (for example `RATE_LIMITED`, `BUSY`, `UPSTREAM_ERROR`, `INTERNAL`) next to `error`.",
     "- Validators are addressed by numeric ID or secp256k1 compressed public key.",
     "- Monetary values are numbers in MON, not strings.",
     "- Uptime endpoints take `?window=` (hours, rolling raw events) or `?period=30d|90d|all` (permanent epoch snapshots).",
@@ -140,8 +145,18 @@ const app = express();
 // honoured only when nginx set it.
 app.set("trust proxy", process.env.TRUST_PROXY || "loopback");
 
+app.disable("x-powered-by");
+
 app.use(cors());
-app.use(express.json());
+
+// Every route is GET and none reads a request body, so no body parser is
+// mounted.
+
+app.use((req, res, next) => {
+  res.set("X-Content-Type-Options", "nosniff");
+  res.set("Referrer-Policy", "no-referrer");
+  next();
+});
 
 // Request logging
 app.use((req, res, next) => {
@@ -165,11 +180,14 @@ app.get("/health", (req, res) => {
 });
 
 // Prometheus scrape target. Kept at the root under its conventional name, and
-// outside the staking rate limiter, since a scraper hits it every 15-30s.
-app.get("/metrics", (req, res) => {
+// outside the staking rate limiter, since a scraper hits it every 15-30s. The
+// rendered text is reused for 20 seconds, so any number of scrapers share one
+// pass over the database.
+app.get("/metrics", heavyLimit, (req, res) => {
   try {
+    const body = memo("metrics", 20_000, renderMetrics);
     res.set("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
-    res.send(renderMetrics());
+    res.send(body);
   } catch (err) {
     log("error", "Metrics render failed:", err.message);
     res.status(500).type("text/plain").send("# metrics unavailable\n");
@@ -182,62 +200,69 @@ app.get("/llms.txt", (req, res) => {
 });
 
 // Data freshness. Everything here is read from SQLite, so it answers "is the
-// data current" without depending on the node being reachable.
-app.get("/monad-api/status", (req, res) => {
+// data current" without depending on the node being reachable. The body is
+// reused for 10 seconds; the thresholds it reports on are minutes long.
+app.get("/monad-api/status", heavyLimit, (req, res) => {
   try {
-    const now = Math.floor(Date.now() / 1000);
-    const lastSnapTs = getLastSnapshotTimestamp();
-    const bounds = getUptimeEventBounds();
-    const cursor = getIndexerCursor("staking_events_last_block");
-    const idx = getIndexerStats();
-    const health = getIndexerHealth();
-    const blockTime = getMeasuredBlockTime();
-
-    // The indexer polls every 30s, so ten missed polls is not a hiccup.
-    const sinceSuccess = health.last_success_ts ? now - health.last_success_ts : null;
-    const stalled = sinceSuccess === null ? null : sinceSuccess > INDEXER_STALL_SECONDS;
-
-    res.json({
-      success: true,
-      network: process.env.NETWORK || "unknown",
-      now_utc: new Date(now * 1000).toISOString(),
-      validators: { total: getValidatorCount(), ...getValidatorCountsByStatus() },
-      uptime_events: {
-        count: bounds?.count ?? 0,
-        oldest_utc: bounds?.oldest ? new Date(bounds.oldest * 1000).toISOString() : null,
-        newest_utc: bounds?.newest ? new Date(bounds.newest * 1000).toISOString() : null,
-        seconds_since_newest: bounds?.newest ? now - bounds.newest : null,
-      },
-      snapshots: {
-        last_epoch: getLastSnapshotEpoch(),
-        last_utc: lastSnapTs ? new Date(lastSnapTs * 1000).toISOString() : null,
-        seconds_since_last: lastSnapTs ? now - lastSnapTs : null,
-        measured_block_time: blockTime ? parseFloat(blockTime.toFixed(4)) : null,
-      },
-      event_indexer: {
-        last_block: cursor !== null ? Number(cursor) : null,
-        events: idx.events,
-        reward_rows: idx.reward_rows,
-        first_event_block: idx.first_event_block,
-        last_event_block: idx.last_event_block,
-        last_success_utc: health.last_success_ts
-          ? new Date(health.last_success_ts * 1000).toISOString()
-          : null,
-        seconds_since_success: sinceSuccess,
-        stalled,
-        last_error: health.last_error
-          ? {
-              message: health.last_error.message,
-              at_utc: health.last_error.ts ? new Date(health.last_error.ts * 1000).toISOString() : null,
-            }
-          : null,
-        gaps: idx.gaps,
-      },
-    });
+    res.json(memo("status", 10_000, statusBody));
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    internalError(req, res, err);
   }
 });
+
+function statusBody() {
+  const now = Math.floor(Date.now() / 1000);
+  const lastSnapTs = getLastSnapshotTimestamp();
+  const bounds = getUptimeEventBounds();
+  const cursor = getIndexerCursor("staking_events_last_block");
+  const idx = getIndexerStats();
+  const health = getIndexerHealth();
+  const blockTime = getMeasuredBlockTime();
+
+  // The indexer polls every 30s, so ten missed polls is not a hiccup.
+  const sinceSuccess = health.last_success_ts ? now - health.last_success_ts : null;
+  const stalled = sinceSuccess === null ? null : sinceSuccess > INDEXER_STALL_SECONDS;
+
+  return {
+    success: true,
+    network: process.env.NETWORK || "unknown",
+    now_utc: new Date(now * 1000).toISOString(),
+    validators: { total: getValidatorCount(), ...getValidatorCountsByStatus() },
+    uptime_events: {
+      count: bounds?.count ?? 0,
+      oldest_utc: bounds?.oldest ? new Date(bounds.oldest * 1000).toISOString() : null,
+      newest_utc: bounds?.newest ? new Date(bounds.newest * 1000).toISOString() : null,
+      seconds_since_newest: bounds?.newest ? now - bounds.newest : null,
+    },
+    snapshots: {
+      last_epoch: getLastSnapshotEpoch(),
+      last_utc: lastSnapTs ? new Date(lastSnapTs * 1000).toISOString() : null,
+      seconds_since_last: lastSnapTs ? now - lastSnapTs : null,
+      measured_block_time: blockTime ? parseFloat(blockTime.toFixed(4)) : null,
+    },
+    event_indexer: {
+      last_block: cursor !== null ? Number(cursor) : null,
+      events: idx.events,
+      reward_rows: idx.reward_rows,
+      first_event_block: idx.first_event_block,
+      last_event_block: idx.last_event_block,
+      last_success_utc: health.last_success_ts
+        ? new Date(health.last_success_ts * 1000).toISOString()
+        : null,
+      seconds_since_success: sinceSuccess,
+      stalled,
+      // When the last poll failed, not why: the error text comes from the
+      // RPC client and the database and stays in the server log.
+      last_error: health.last_error
+        ? {
+            message: "Indexer poll failed",
+            at_utc: health.last_error.ts ? new Date(health.last_error.ts * 1000).toISOString() : null,
+          }
+        : null,
+      gaps: idx.gaps,
+    },
+  };
+}
 
 // OpenAPI document
 app.get("/monad-api/openapi.json", (req, res) => {
@@ -247,7 +272,46 @@ app.get("/monad-api/openapi.json", (req, res) => {
 
 // Documentation site, also served from the root below once the API routes
 // have had their chance to match.
-app.use("/monad-api/docs", express.static(path.join(__dirname, "public")));
+//
+// The page is a single file with one inline script, inline styles and
+// same-origin fetches. Its CSP allows exactly that: the script by its hash,
+// computed from the file being served (and recomputed if the file changes),
+// so nothing else can run on the page.
+const PUBLIC_DIR = path.join(__dirname, "public");
+const cspByFile = new Map(); // path -> { mtimeMs, csp }
+
+function contentSecurityPolicy(filePath, mtimeMs) {
+  const hit = cspByFile.get(filePath);
+  if (hit && hit.mtimeMs === mtimeMs) return hit.csp;
+
+  const html = fs.readFileSync(filePath, "utf8");
+  const hashes = [];
+  for (const m of html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
+    hashes.push(`'sha256-${crypto.createHash("sha256").update(m[1], "utf8").digest("base64")}'`);
+  }
+  const csp = [
+    "default-src 'none'",
+    `script-src 'self'${hashes.length ? " " + hashes.join(" ") : ""}`,
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self'",
+    "connect-src 'self'",
+    "base-uri 'none'",
+    "form-action 'none'",
+    "frame-ancestors 'none'",
+  ].join("; ");
+  cspByFile.set(filePath, { mtimeMs, csp });
+  return csp;
+}
+
+const staticOptions = {
+  setHeaders(res, filePath, stat) {
+    if (filePath.endsWith(".html")) {
+      res.set("Content-Security-Policy", contentSecurityPolicy(filePath, stat.mtimeMs));
+    }
+  },
+};
+
+app.use("/monad-api/docs", express.static(PUBLIC_DIR, staticOptions));
 
 // API info, generated from the spec so it cannot drift from the routes
 app.get("/monad-api", (req, res) => {
@@ -269,7 +333,7 @@ app.use("/monad-api/staking", rateLimit({ windowMs: 60_000, max: 60, timeoutMs: 
 
 // Landing page at the root. Mounted after the API routes so it can only ever
 // serve paths they did not claim.
-app.use("/", express.static(path.join(__dirname, "public")));
+app.use("/", express.static(PUBLIC_DIR, staticOptions));
 
 // 404 handler
 app.use((req, res) => {
