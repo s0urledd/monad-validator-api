@@ -3,6 +3,7 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import { ethers } from "ethers";
+import { BoundedCache } from "./bounded-cache.js";
 
 const MONAD_RPC_URL = process.env.MONAD_RPC_URL || "http://127.0.0.1:8080";
 const STAKING_ADDRESS = "0x0000000000000000000000000000000000001000";
@@ -34,14 +35,33 @@ function toMON(wei) {
 }
 
 // ---------- Cache ----------
+// Two bounded stores. Network-wide lookups (epoch, validator sets, pool) use
+// a handful of fixed keys and live in their own small store, so a flood of
+// per-caller keys can never evict them. Lookups keyed by request input
+// (validator IDs, delegator addresses, pagination cursors) share a capped
+// LRU: before the cap, every distinct key a caller sent stayed in memory for
+// the life of the process.
 const CACHE_TTL_MS = 30_000;
-const _cache = new Map();
+const sharedCache = new BoundedCache({ max: 32, ttlMs: CACHE_TTL_MS });
+const callerCache = new BoundedCache({ max: 5000, ttlMs: CACHE_TTL_MS });
+setInterval(() => {
+  sharedCache.sweep();
+  callerCache.sweep();
+}, 60_000).unref();
 
-function cached(key, fn) {
-  const hit = _cache.get(key);
-  if (hit && Date.now() - hit.ts < CACHE_TTL_MS) return hit.p;
-  const p = fn().catch((err) => { _cache.delete(key); throw err; });
-  _cache.set(key, { p, ts: Date.now() });
+// A paginated precompile walk gives up after this many pages if the
+// precompile never reports isDone, so a misbehaving node cannot spin it. It
+// fails rather than returning a silently truncated list.
+const MAX_PAGES = 64;
+
+function cached(key, fn, store = callerCache) {
+  const hit = store.get(key);
+  if (hit) return hit;
+  const p = fn().catch((err) => {
+    if (store.peek(key) === p) store.delete(key);
+    throw err;
+  });
+  store.set(key, p);
   return p;
 }
 
@@ -103,13 +123,14 @@ export function getAllDelegations(delegatorAddress) {
     let startValId = 0;
     let isDone = false;
 
-    while (!isDone) {
+    for (let page = 0; !isDone && page < MAX_PAGES; page++) {
       const result = await contract.getDelegations.staticCall(delegatorAddress, startValId);
       isDone = result[0];
       startValId = Number(result[1]);
       const ids = result[2].map((id) => Number(id));
       valIds.push(...ids);
     }
+    if (!isDone) throw new Error(`Precompile paging did not finish within ${MAX_PAGES} pages`);
 
     return valIds;
   });
@@ -141,12 +162,13 @@ export function getAllDelegators(valId) {
     let startDelegator = ethers.ZeroAddress;
     let isDone = false;
 
-    while (!isDone) {
+    for (let page = 0; !isDone && page < MAX_PAGES; page++) {
       const result = await contract.getDelegators.staticCall(valId, startDelegator);
       isDone = result[0];
       startDelegator = result[1];
       delegators.push(...result[2]);
     }
+    if (!isDone) throw new Error(`Precompile paging did not finish within ${MAX_PAGES} pages`);
 
     return delegators;
   });
@@ -162,7 +184,7 @@ export function getEpochInfo() {
       epoch: Number(result[0]),
       in_delay_period: result[1],
     };
-  });
+  }, sharedCache);
 }
 
 export async function getProposer() {
@@ -180,14 +202,15 @@ function getExecutionValidatorSet() {
     let startIndex = 0;
     let isDone = false;
 
-    while (!isDone) {
+    for (let page = 0; !isDone && page < MAX_PAGES; page++) {
       const result = await contract.getExecutionValidatorSet.staticCall(startIndex);
       isDone = result[0];
       startIndex = Number(result[1]);
       ids.push(...result[2].map((id) => Number(id)));
     }
+    if (!isDone) throw new Error(`Precompile paging did not finish within ${MAX_PAGES} pages`);
     return ids;
-  });
+  }, sharedCache);
 }
 
 function getConsensusValidatorSet() {
@@ -197,14 +220,15 @@ function getConsensusValidatorSet() {
     let startIndex = 0;
     let isDone = false;
 
-    while (!isDone) {
+    for (let page = 0; !isDone && page < MAX_PAGES; page++) {
       const result = await contract.getConsensusValidatorSet.staticCall(startIndex);
       isDone = result[0];
       startIndex = Number(result[1]);
       ids.push(...result[2].map((id) => Number(id)));
     }
+    if (!isDone) throw new Error(`Precompile paging did not finish within ${MAX_PAGES} pages`);
     return ids;
-  });
+  }, sharedCache);
 }
 
 function getSnapshotValidatorSet() {
@@ -214,14 +238,15 @@ function getSnapshotValidatorSet() {
     let startIndex = 0;
     let isDone = false;
 
-    while (!isDone) {
+    for (let page = 0; !isDone && page < MAX_PAGES; page++) {
       const result = await contract.getSnapshotValidatorSet.staticCall(startIndex);
       isDone = result[0];
       startIndex = Number(result[1]);
       ids.push(...result[2].map((id) => Number(id)));
     }
+    if (!isDone) throw new Error(`Precompile paging did not finish within ${MAX_PAGES} pages`);
     return ids;
-  });
+  }, sharedCache);
 }
 
 /**
@@ -239,7 +264,7 @@ export function getValidatorSets() {
       getSnapshotValidatorSet(),
     ]);
     return { execution, consensus, snapshot };
-  });
+  }, sharedCache);
 }
 
 // ---------- Live Pool ----------
@@ -294,7 +319,7 @@ export function getLivePool() {
       execution_validators: execIds.length,
       consensus_validators: consensusIds.length,
     };
-  });
+  }, sharedCache);
 }
 
 // ---------- Batch Queries ----------

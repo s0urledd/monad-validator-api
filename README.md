@@ -109,7 +109,7 @@ plain text for agents. All three come from the one document.
 | `GET /monad-api/staking/validator-set` | Who enters and leaves next epoch |
 | `GET /monad-api/staking/proposer` | Current block proposer |
 | `GET /monad-api/staking/validator/{id}` | Live stake, commission, pending changes |
-| `GET /monad-api/staking/validator/{id}/delegators` | Paginated. `?limit` `?cursor` |
+| `GET /monad-api/staking/validator/{id}/delegators` | Paginated, up to 100 per page. `?limit` `?cursor` |
 | `GET /monad-api/staking/validator/{id}/rewards` | Block and external rewards per epoch |
 | `GET /monad-api/staking/blocks` | Blocks proposed per validator since rewards began. `?since_epoch` |
 | `GET /monad-api/staking/validator/{id}/events` | Indexed events for one validator |
@@ -279,7 +279,7 @@ up by the next run, once it has closed.
 | Variable | Default | |
 |---|---|---|
 | `PORT` | `3000` | |
-| `HOST` | `0.0.0.0` | `127.0.0.1` when behind a proxy |
+| `HOST` | `127.0.0.1` | `0.0.0.0` only when clients must reach the port without a proxy |
 | `NETWORK` | `testnet` | Set it explicitly — see below |
 | `MONAD_RPC_URL` | `http://127.0.0.1:8080` | |
 | `JOURNAL_UNIT` | `monad-ledger-tail` | Unit the logger tails |
@@ -344,9 +344,27 @@ Validator IDs start at 1 on both networks and mean different validators, so
 ## Notes
 
 Monetary values are returned as numbers, not formatted strings. Live RPC calls
-share a 30-second in-memory cache. Staking routes allow 60 requests per minute
-per IP and return `X-RateLimit-*` headers; validator routes are unmetered. A
-failed GitHub sync leaves existing metadata untouched.
+share a 30-second in-memory cache, capped in size. A failed GitHub sync leaves
+existing metadata untouched.
+
+Per-IP limits are ceilings against abuse, set well above what real clients
+send:
+
+| Routes | Limit per IP |
+|---|---|
+| Staking | 60 per minute |
+| Staking delegators and delegations (`/validator/{id}/delegators`, `/delegator/{address}`) | a further 60 per minute between them; 8 at once across all callers, else 503 `BUSY`; 504 after 30 s |
+| Validators | 300 per second |
+| All-validator uptime, `/network/uptime`, `/vdp`, `/metrics`, `/monad-api/status` | 50 per second |
+
+Limited routes return `X-RateLimit-*` headers, and a rejected request gets 429
+with `Retry-After`. The all-validator aggregates and `/metrics` are reused for
+20 to 30 seconds and `/monad-api/status` for 10, so a burst of callers shares
+one pass over the database.
+
+Error responses carry a stable `code` next to `error`: `RATE_LIMITED`, `BUSY`,
+`TIMEOUT`, `UPSTREAM_ERROR` or `INTERNAL`. What actually failed is written
+to the server log, not returned.
 
 ## License
 

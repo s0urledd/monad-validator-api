@@ -347,11 +347,19 @@ export function normalizeAddress(addr) {
   return x;
 }
 
+// A path segment that can name a validator: its numeric ID, or its secp256k1
+// public key in hex, with or without 0x. Anything else cannot match a row and
+// is not looked up.
+const VALIDATOR_ID_RE = /^[0-9]{1,20}$/;
+const VALIDATOR_KEY_RE = /^(0x)?[0-9a-fA-F]{2,130}$/;
+
 export function resolveValidator(idOrAddress) {
-  const numId = /^[0-9]+$/.test(idOrAddress) ? parseInt(idOrAddress, 10) : NaN;
-  if (!isNaN(numId) && numId > 0) {
-    return getValidatorById(numId);
+  if (typeof idOrAddress !== "string") return undefined;
+  if (VALIDATOR_ID_RE.test(idOrAddress)) {
+    const numId = Number(idOrAddress);
+    if (numId > 0 && Number.isSafeInteger(numId)) return getValidatorById(numId);
   }
+  if (!VALIDATOR_KEY_RE.test(idOrAddress)) return undefined;
   return getValidatorByAddress(idOrAddress);
 }
 

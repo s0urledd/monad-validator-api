@@ -4,7 +4,7 @@
     "title": "Monad Validator & Staking API",
     "version": "2.1.0",
     "summary": "Validator metadata, uptime history, VDP compliance and on-chain staking data for Monad.",
-    "description": "A REST API over Monad validator data.\n\nUptime is derived from the consensus logs of our own nodes, which is the only way to attribute rounds to a proposer: none of Monad's three real-time data sources carry the block author, and the staking precompile's `getProposerValId` reports only the current proposer with no history.\n\nRaw rounds are kept in a 48 hour rolling window and rolled up into permanent per-epoch snapshots, so long-range figures survive the window. Staking precompile events are indexed as they are emitted, and older history is filled in from an archive node.\n\nNo authentication. Staking endpoints are rate limited per IP.\n\nResponse examples throughout this document are illustrative. They show the shape of each payload, not the live state of whichever network you are reading them on, and the figures in them are not comparable between deployments. Call the endpoint for current values.",
+    "description": "A REST API over Monad validator data.\n\nUptime is derived from the consensus logs of our own nodes, which is the only way to attribute rounds to a proposer: none of Monad's three real-time data sources carry the block author, and the staking precompile's `getProposerValId` reports only the current proposer with no history.\n\nRaw rounds are kept in a 48 hour rolling window and rolled up into permanent per-epoch snapshots, so long-range figures survive the window. Staking precompile events are indexed as they are emitted, and older history is filled in from an archive node.\n\nNo authentication. Requests are limited per IP, as a ceiling against abuse rather than a quota: 60 per minute on the staking endpoints, 300 per second on the validator endpoints, and 50 per second on the endpoints that aggregate over every validator, `/metrics` and `/monad-api/status`. A rejected request gets 429 with `Retry-After`. Every error response carries a stable `code` next to `error`.\n\nResponse examples throughout this document are illustrative. They show the shape of each payload, not the live state of whichever network you are reading them on, and the figures in them are not comparable between deployments. Call the endpoint for current values.",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -84,7 +84,7 @@
           "System"
         ],
         "summary": "Prometheus metrics",
-        "description": "Scrape target in the Prometheus text exposition format. Every series is read from SQLite, so a scrape never waits on the node and is not rate limited.\n\nCovers per-validator uptime, stake, commission and VDP strikes, plus network totals, indexer progress and the measured block time.",
+        "description": "Scrape target in the Prometheus text exposition format. Every series is read from SQLite, so a scrape never waits on the node. The rendered output is reused for 20 seconds, so any number of scrapers share one pass over the database.\n\nCovers per-validator uptime, stake, commission and VDP strikes, plus network totals, indexer progress and the measured block time.",
         "operationId": "metrics",
         "responses": {
           "200": {
@@ -94,6 +94,9 @@
                 "example": "monad_api_up 1\nmonad_validators{status=\"active\"} 200\nmonad_validator_uptime_percent{id=\"1\",name=\"Example\",status=\"active\"} 99.95\nmonad_validator_vdp_strikes{id=\"1\",name=\"Example\"} 0\nmonad_network_uptime_percent 99.77\nmonad_measured_block_time_seconds 0.30264\n"
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         }
       }
@@ -140,6 +143,9 @@
                 }
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         }
       }
@@ -169,6 +175,9 @@
                 }
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         }
       }
@@ -205,6 +214,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         }
       }
@@ -215,7 +227,7 @@
           "Uptime"
         ],
         "summary": "Uptime for all validators",
-        "description": "Two modes. Without `period`, a rolling window over raw round events (default 24h, retained 48h). With `period`, cumulative totals from the permanent epoch snapshots, which reach back further than the raw window.\n\nResults are sorted by uptime descending, so adding `limit` gives a leaderboard.",
+        "description": "Two modes. Without `period`, a rolling window over raw round events (default 24h, retained 48h). With `period`, cumulative totals from the permanent epoch snapshots, which reach back further than the raw window.\n\nResults are sorted by uptime descending, so adding `limit` gives a leaderboard.\n\nThe unsorted rows behind each `window` and `period` are reused for 20 seconds.",
         "operationId": "listUptime",
         "parameters": [
           {
@@ -258,6 +270,9 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         }
       }
@@ -306,6 +321,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         }
       }
@@ -355,6 +373,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         }
       }
@@ -365,7 +386,7 @@
           "Uptime"
         ],
         "summary": "Network-wide uptime per epoch",
-        "description": "Aggregate uptime for each epoch, with the number of validators that fell below the 98% VDP threshold in it.",
+        "description": "Aggregate uptime for each epoch, with the number of validators that fell below the 98% VDP threshold in it.\n\nThe response is reused for 30 seconds.",
         "operationId": "networkUptime",
         "parameters": [
           {
@@ -403,6 +424,9 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         }
       }
@@ -413,7 +437,7 @@
           "Compliance"
         ],
         "summary": "VDP status for all validators",
-        "description": "Sorted worst first: breaches, then at risk, then by strike count.\n\nThe programme applies to mainnet. A deployment on any other network still computes the weekly figures, since the uptime is real, but reports `applies: false` and omits the VDP series from /metrics, so a testnet strike is not mistaken for programme standing.",
+        "description": "Sorted worst first: breaches, then at risk, then by strike count.\n\nThe programme applies to mainnet. A deployment on any other network still computes the weekly figures, since the uptime is real, but reports `applies: false` and omits the VDP series from /metrics, so a testnet strike is not mistaken for programme standing.\n\nThe response is reused for 30 seconds.",
         "operationId": "listVdp",
         "responses": {
           "200": {
@@ -453,6 +477,9 @@
                 }
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         }
       }
@@ -528,6 +555,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         }
       }
@@ -574,6 +604,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         }
       }
@@ -788,7 +821,7 @@
           "Staking"
         ],
         "summary": "Delegators of a validator",
-        "description": "Paginated against the precompile's own cursor. A validator's delegator set can be very large and walking all of it is an expensive lookup, so only the requested page is fetched. Pass `next_cursor` from the previous response to continue.\n\n`total_delegators` is populated only when a single request covered the whole set; otherwise it is null, because the true total is not knowable without walking every page.",
+        "description": "Paginated against the precompile's own cursor. A validator's delegator set can be very large and walking all of it is an expensive lookup, so only the requested page is fetched. Pass `next_cursor` from the previous response to continue.\n\n`total_delegators` is populated only when a single request covered the whole set; otherwise it is null, because the true total is not knowable without walking every page.\n\nThis endpoint and the delegations endpoint make many precompile calls per request, so they share an extra per-IP budget of 60 requests per minute, and at most 8 of them run at once across all callers. Past that the server answers 503 with `code: BUSY` and `Retry-After`. A request still running after 30 seconds gets 504.",
         "operationId": "listDelegators",
         "parameters": [
           {
@@ -800,7 +833,7 @@
             "schema": {
               "type": "integer",
               "minimum": 1,
-              "maximum": 500,
+              "maximum": 100,
               "default": 100
             }
           },
@@ -843,6 +876,9 @@
           },
           "503": {
             "$ref": "#/components/responses/Upstream"
+          },
+          "504": {
+            "$ref": "#/components/responses/Timeout"
           }
         }
       }
@@ -853,6 +889,7 @@
           "Staking"
         ],
         "summary": "Delegations for an address",
+        "description": "Every validator the address delegates to, with the stake and unclaimed rewards held at each. At most 300 validators are queried per request; an address delegating to more gets the first 300 and `truncated: true`, and the totals then cover those only. The field is absent otherwise.\n\nThis endpoint and the delegators endpoint make many precompile calls per request, so they share an extra per-IP budget of 60 requests per minute, and at most 8 of them run at once across all callers. Past that the server answers 503 with `code: BUSY` and `Retry-After`. A request still running after 30 seconds gets 504.",
         "operationId": "getDelegator",
         "parameters": [
           {
@@ -893,6 +930,12 @@
           },
           "429": {
             "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Upstream"
+          },
+          "504": {
+            "$ref": "#/components/responses/Timeout"
           }
         }
       }
@@ -1346,7 +1389,7 @@
           "System"
         ],
         "summary": "Data freshness",
-        "description": "How current each dataset is: the newest raw round, the last epoch snapshot, and the event indexer's cursor. Read entirely from SQLite, so it answers \"is the data current\" even when the node is unreachable.\n\n`event_indexer.stalled` is true when no indexer run has succeeded for five minutes; `last_error` is the most recent failure. `gaps` lists block ranges the indexer skipped because the node no longer served their logs, so events in those ranges are absent from `/events`, `/flow` and `/rewards`.",
+        "description": "How current each dataset is: the newest raw round, the last epoch snapshot, and the event indexer's cursor. Read entirely from SQLite, so it answers \"is the data current\" even when the node is unreachable.\n\n`event_indexer.stalled` is true when no indexer run has succeeded for five minutes; `last_error` records when the most recent failure happened; its `message` is a fixed string, and the detail stays in the server log. `gaps` lists block ranges the indexer skipped because the node no longer served their logs, so events in those ranges are absent from `/events`, `/flow` and `/rewards`.\n\nThe response is reused for 10 seconds.",
         "operationId": "status",
         "responses": {
           "200": {
@@ -1386,6 +1429,9 @@
                 }
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         }
       }
@@ -1493,8 +1539,16 @@
           "error": {
             "type": "string"
           },
+          "code": {
+            "type": "string",
+            "description": "Stable machine-readable reason, present on rate limiting, busy, timeout and server-side errors: RATE_LIMITED, BUSY, TIMEOUT, UPSTREAM_ERROR or INTERNAL."
+          },
           "hint": {
             "type": "string"
+          },
+          "retry_after": {
+            "type": "integer",
+            "description": "Seconds to wait before retrying, on 429 and BUSY responses."
           }
         }
       }
@@ -1531,25 +1585,47 @@
         }
       },
       "RateLimited": {
-        "description": "Rate limit exceeded. Staking endpoints allow 60 requests per minute per IP. Responses carry X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset; a rejection adds Retry-After.",
+        "description": "Per-IP limit exceeded. The limits are ceilings against abuse: 60 requests per minute on the staking endpoints, plus a shared 60 per minute on the two delegator endpoints; 300 per second on the validator endpoints; 50 per second on the all-validator aggregates, /metrics and /monad-api/status. Responses on limited routes carry X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset; a rejection adds Retry-After.",
         "content": {
           "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
             "example": {
               "success": false,
               "error": "Too many requests",
+              "code": "RATE_LIMITED",
               "retry_after": 42
             }
           }
         }
       },
       "Upstream": {
-        "description": "The staking precompile could not be reached.",
+        "description": "The staking precompile could not be reached (`code: UPSTREAM_ERROR`). On the two delegator endpoints, also returned when too many of those requests are already running (`code: BUSY`, with `Retry-After`).",
         "content": {
           "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
             "example": {
               "success": false,
               "error": "Failed to query epoch info",
-              "details": "connection refused"
+              "code": "UPSTREAM_ERROR"
+            }
+          }
+        }
+      },
+      "Timeout": {
+        "description": "The request did not finish within 30 seconds.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "success": false,
+              "error": "Request timeout",
+              "code": "TIMEOUT"
             }
           }
         }

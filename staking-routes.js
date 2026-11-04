@@ -5,7 +5,6 @@ import {
   getValidatorOnChain,
   getDelegatorInfo,
   getAllDelegations,
-  getAllDelegators,
   getDelegatorsPage,
   getEpochInfo,
   getLivePool,
@@ -24,6 +23,17 @@ import {
   getBlocksProposedTotals,
   getBlocksPerEpoch,
 } from "./db.js";
+import {
+  fanoutLimit,
+  fanoutGate,
+  deadline,
+  parseId,
+  parseLimit,
+  parseNonNegativeInt,
+  isHexAddress,
+  internalError,
+  upstreamError,
+} from "./guards.js";
 
 const router = Router();
 
@@ -58,11 +68,7 @@ router.get("/epoch", async (req, res) => {
       in_delay_period: epoch.in_delay_period,
     });
   } catch (err) {
-    res.status(503).json({
-      success: false,
-      error: "Failed to query epoch info",
-      details: err.message,
-    });
+    upstreamError(req, res, err, "Failed to query epoch info");
   }
 });
 
@@ -109,7 +115,7 @@ router.get("/pool", async (req, res) => {
       ...(epoch && { epoch: epoch.epoch, in_delay_period: epoch.in_delay_period }),
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    internalError(req, res, err);
   }
 });
 
@@ -160,11 +166,19 @@ router.get("/events", (req, res) => {
       });
     }
 
-    const limit = Number(req.query.limit) || 50;
+    const address = req.query.address;
+    if (address && !isHexAddress(address)) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid address",
+        hint: "Pass a 0x-prefixed 20-byte hex address",
+      });
+    }
+
     const events = getStakingEvents({
       eventType,
-      address: req.query.address,
-      limit,
+      address: address || undefined,
+      limit: parseLimit(req.query.limit, 50, 500),
     });
 
     res.json({
@@ -174,15 +188,15 @@ router.get("/events", (req, res) => {
       events: events.map(formatEvent),
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    internalError(req, res, err);
   }
 });
 
 // GET /monad-api/staking/validator/:valId/events
 router.get("/validator/:valId/events", (req, res) => {
   try {
-    const valId = parseInt(req.params.valId);
-    if (isNaN(valId) || valId <= 0) {
+    const valId = parseId(req.params.valId);
+    if (valId === null) {
       return res.status(400).json({ success: false, error: "Invalid validator ID" });
     }
 
@@ -198,7 +212,7 @@ router.get("/validator/:valId/events", (req, res) => {
     const events = getStakingEvents({
       validatorId: valId,
       eventType,
-      limit: Number(req.query.limit) || 50,
+      limit: parseLimit(req.query.limit, 50, 500),
     });
 
     res.json({
@@ -209,7 +223,7 @@ router.get("/validator/:valId/events", (req, res) => {
       events: events.map(formatEvent),
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    internalError(req, res, err);
   }
 });
 
@@ -250,12 +264,12 @@ function epochRewardView(r, blockReward) {
 // GET /monad-api/staking/validator/:valId/rewards
 router.get("/validator/:valId/rewards", (req, res) => {
   try {
-    const valId = parseInt(req.params.valId);
-    if (isNaN(valId) || valId <= 0) {
+    const valId = parseId(req.params.valId);
+    if (valId === null) {
       return res.status(400).json({ success: false, error: "Invalid validator ID" });
     }
 
-    const rows = getValidatorEpochRewards(valId, Number(req.query.limit) || 100);
+    const rows = getValidatorEpochRewards(valId, parseLimit(req.query.limit, 100, 500));
     const rewardByEpoch = getEpochBlockRewards(rows.map((r) => r.epoch));
     const epochs = rows.map((r) => epochRewardView(r, rewardByEpoch.get(r.epoch)));
 
@@ -292,7 +306,7 @@ router.get("/validator/:valId/rewards", (req, res) => {
       epochs,
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    internalError(req, res, err);
   }
 });
 
@@ -302,8 +316,8 @@ router.get("/validator/:valId/rewards", (req, res) => {
 // block and appears nowhere here, which is why this is not an uptime figure.
 router.get("/blocks", (req, res) => {
   try {
-    const since = req.query.since_epoch != null ? parseInt(req.query.since_epoch) : null;
-    if (req.query.since_epoch != null && (isNaN(since) || since < 0)) {
+    const since = req.query.since_epoch != null ? parseNonNegativeInt(req.query.since_epoch) : null;
+    if (req.query.since_epoch != null && since === null) {
       return res.status(400).json({ success: false, error: "since_epoch must be a non-negative integer" });
     }
 
@@ -344,7 +358,7 @@ router.get("/blocks", (req, res) => {
       validators,
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    internalError(req, res, err);
   }
 });
 
@@ -354,7 +368,8 @@ const FLOW_PERIODS = { "24h": 86400, "7d": 7 * 86400, "30d": 30 * 86400, all: nu
 
 function flowSince(req) {
   const period = req.query.period || "7d";
-  if (!(period in FLOW_PERIODS)) return { error: period };
+  // hasOwn, not `in`: `in` also matches inherited keys such as "constructor".
+  if (typeof period !== "string" || !Object.hasOwn(FLOW_PERIODS, period)) return { error: period };
   const secs = FLOW_PERIODS[period];
   return { period, since: secs === null ? null : Math.floor(Date.now() / 1000) - secs };
 }
@@ -436,15 +451,15 @@ router.get("/flow", (req, res) => {
       validators,
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    internalError(req, res, err);
   }
 });
 
 // GET /monad-api/staking/validator/:valId/flow
 router.get("/validator/:valId/flow", (req, res) => {
   try {
-    const valId = parseInt(req.params.valId);
-    if (isNaN(valId) || valId <= 0) {
+    const valId = parseId(req.params.valId);
+    if (valId === null) {
       return res.status(400).json({ success: false, error: "Invalid validator ID" });
     }
     const f = flowSince(req);
@@ -471,7 +486,7 @@ router.get("/validator/:valId/flow", (req, res) => {
       flow: formatFlow(a),
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    internalError(req, res, err);
   }
 });
 
@@ -493,11 +508,7 @@ router.get("/proposer", async (req, res) => {
       },
     });
   } catch (err) {
-    res.status(503).json({
-      success: false,
-      error: "Failed to query current proposer",
-      details: err.message,
-    });
+    upstreamError(req, res, err, "Failed to query current proposer");
   }
 });
 
@@ -548,11 +559,7 @@ router.get("/validator-set", async (req, res) => {
       eligible_not_active: describeValidators(eligibleNotActive),
     });
   } catch (err) {
-    res.status(503).json({
-      success: false,
-      error: "Failed to query validator sets",
-      details: err.message,
-    });
+    upstreamError(req, res, err, "Failed to query validator sets");
   }
 });
 
@@ -561,8 +568,8 @@ router.get("/validator-set", async (req, res) => {
 // GET /monad-api/staking/validator/:valId
 router.get("/validator/:valId", async (req, res) => {
   try {
-    const valId = parseInt(req.params.valId);
-    if (isNaN(valId) || valId <= 0) {
+    const valId = parseId(req.params.valId);
+    if (valId === null) {
       return res.status(400).json({ success: false, error: "Invalid validator ID" });
     }
 
@@ -612,21 +619,34 @@ router.get("/validator/:valId", async (req, res) => {
       },
     });
   } catch (err) {
-    res.status(503).json({
-      success: false,
-      error: "Failed to query validator on-chain data",
-      details: err.message,
-    });
+    upstreamError(req, res, err, "Failed to query validator on-chain data");
   }
 });
 
 // ---------- Validator Delegators ----------
 
+// These two routes fan out into many precompile calls per request, so each
+// carries a per-IP budget of its own, a gate on how many run at once across
+// all callers, and a deadline. When the deadline passes or the client goes
+// away, the signal fires and the handler stops issuing further calls.
+const FANOUT_DEADLINE_MS = 30_000;
+const fanout = [fanoutLimit, fanoutGate, deadline(FANOUT_DEADLINE_MS)];
+
+// A page of delegators is at most this many entries.
+const MAX_DELEGATORS_PER_REQUEST = 100;
+// Precompile pages walked for one response, should a node keep returning
+// empty pages without reporting that it is done.
+const MAX_DELEGATOR_PAGES = 20;
+// Validators a single delegator lookup will query. The whole validator set
+// fits well within it.
+const MAX_DELEGATIONS_PER_REQUEST = 300;
+
 // GET /monad-api/staking/validator/:valId/delegators
-router.get("/validator/:valId/delegators", async (req, res) => {
+router.get("/validator/:valId/delegators", ...fanout, async (req, res) => {
+  const { signal } = res.locals;
   try {
-    const valId = parseInt(req.params.valId);
-    if (isNaN(valId) || valId <= 0) {
+    const valId = parseId(req.params.valId);
+    if (valId === null) {
       return res.status(400).json({ success: false, error: "Invalid validator ID" });
     }
 
@@ -635,7 +655,7 @@ router.get("/validator/:valId/delegators", async (req, res) => {
     // Walk the precompile's pagination only as far as this page needs. Fetching
     // every delegator turned one HTTP request into an unbounded number of RPC
     // calls, which is exactly what the staking docs warn against.
-    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
+    const limit = parseLimit(req.query.limit, MAX_DELEGATORS_PER_REQUEST, MAX_DELEGATORS_PER_REQUEST);
     const cursor = req.query.cursor;
     if (cursor && !ethers.isAddress(cursor)) {
       return res.status(400).json({
@@ -650,7 +670,8 @@ router.get("/validator/:valId/delegators", async (req, res) => {
     let done = false;
     const startedAtBeginning = !cursor;
 
-    while (addresses.length < limit && !done) {
+    for (let pages = 0; addresses.length < limit && !done && pages < MAX_DELEGATOR_PAGES; pages++) {
+      signal.throwIfAborted();
       const page = await getDelegatorsPage(valId, next);
       addresses.push(...page.delegators);
       done = page.isDone;
@@ -669,6 +690,7 @@ router.get("/validator/:valId/delegators", async (req, res) => {
     const delegators = [];
     const batchSize = 10;
     for (let i = 0; i < pageAddresses.length; i += batchSize) {
+      signal.throwIfAborted();
       const batch = pageAddresses.slice(i, i + batchSize);
       const results = await Promise.all(
         batch.map(async (addr) => {
@@ -682,6 +704,7 @@ router.get("/validator/:valId/delegators", async (req, res) => {
       );
       delegators.push(...results);
     }
+    signal.throwIfAborted();
 
     // Sorting applies within the page; the precompile orders by address.
     delegators.sort((a, b) => (b.stake || 0) - (a.stake || 0));
@@ -698,18 +721,17 @@ router.get("/validator/:valId/delegators", async (req, res) => {
       delegators,
     });
   } catch (err) {
-    res.status(503).json({
-      success: false,
-      error: "Failed to query delegators",
-      details: err.message,
-    });
+    // Timed out (the client already has its 504) or the client left.
+    if (signal.aborted) return;
+    upstreamError(req, res, err, "Failed to query delegators");
   }
 });
 
 // ---------- Delegator Delegations ----------
 
 // GET /monad-api/staking/delegator/:address
-router.get("/delegator/:address", async (req, res) => {
+router.get("/delegator/:address", ...fanout, async (req, res) => {
+  const { signal } = res.locals;
   try {
     const address = req.params.address;
     if (!ethers.isAddress(address)) {
@@ -717,7 +739,9 @@ router.get("/delegator/:address", async (req, res) => {
     }
 
     const checksumAddress = ethers.getAddress(address);
-    const valIds = await getAllDelegations(checksumAddress);
+    const allValIds = await getAllDelegations(checksumAddress);
+    const truncated = allValIds.length > MAX_DELEGATIONS_PER_REQUEST;
+    const valIds = truncated ? allValIds.slice(0, MAX_DELEGATIONS_PER_REQUEST) : allValIds;
 
     // Fetch delegation details for each validator
     const delegations = [];
@@ -725,6 +749,7 @@ router.get("/delegator/:address", async (req, res) => {
     let totalRewards = 0n;
 
     for (const valId of valIds) {
+      signal.throwIfAborted();
       try {
         const info = await getDelegatorInfo(valId, checksumAddress);
         const validator = getValidatorById(valId);
@@ -746,6 +771,7 @@ router.get("/delegator/:address", async (req, res) => {
         });
       }
     }
+    signal.throwIfAborted();
 
     res.json({
       success: true,
@@ -753,14 +779,14 @@ router.get("/delegator/:address", async (req, res) => {
       total_staked: toMON(totalStaked),
       total_rewards: toMON(totalRewards),
       delegation_count: delegations.length,
+      // Present only when the address delegates to more validators than one
+      // request covers; the totals then cover the listed delegations only.
+      ...(truncated && { truncated: true }),
       delegations,
     });
   } catch (err) {
-    res.status(503).json({
-      success: false,
-      error: "Failed to query delegations",
-      details: err.message,
-    });
+    if (signal.aborted) return;
+    upstreamError(req, res, err, "Failed to query delegations");
   }
 });
 
