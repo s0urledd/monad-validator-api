@@ -14,6 +14,7 @@ import {
 } from "./staking.js";
 import {
   getValidatorById,
+  getAllValidators,
   getValidatorCount,
   getMeasuredBlockTime,
   getStakingEvents,
@@ -522,22 +523,24 @@ router.get("/validator-set", async (req, res) => {
       getEpochInfo().catch(() => null),
     ]);
 
-    const consensus = new Set(sets.consensus);
-    const snapshot = new Set(sets.snapshot);
+    // Who is in the set now and who is in the next one comes from the synced
+    // set_state (see status-sync.js): which on-chain view answers each
+    // question depends on the epoch delay period, and it is worked out once
+    // there. The snapshot view is the previous set, not the next one.
+    const state = new Map(getAllValidators().map((v) => [v.id, v.set_state]));
+    const idsIn = (...states) =>
+      [...state].filter(([, s]) => states.includes(s)).map(([id]) => id);
 
-    // snapshot is next epoch's set, consensus is this epoch's
-    const entering = sets.snapshot.filter((id) => !consensus.has(id));
-    const leaving = sets.consensus.filter((id) => !snapshot.has(id));
-    const eligibleNotActive = sets.execution.filter(
-      (id) => !consensus.has(id) && !snapshot.has(id)
-    );
+    const entering = idsIn("joining");
+    const leaving = idsIn("leaving");
+    const eligibleNotActive = sets.execution.filter((id) => state.get(id) === "inactive");
 
     res.json({
       success: true,
       ...(epoch && { epoch: epoch.epoch, in_delay_period: epoch.in_delay_period }),
       counts: {
-        active: sets.consensus.length,
-        next_epoch: sets.snapshot.length,
+        active: idsIn("active", "leaving").length,
+        next_epoch: idsIn("active", "joining").length,
         eligible: sets.execution.length,
         entering: entering.length,
         leaving: leaving.length,

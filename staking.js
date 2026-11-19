@@ -227,9 +227,11 @@ function getSnapshotValidatorSet() {
 /**
  * All three validator sets at once.
  *
- * consensus = active this epoch, snapshot = active next epoch,
- * execution = every validator eligible to be considered. Comparing them yields
- * who is entering, who is leaving, and who is eligible but below the cut.
+ * execution = every validator that meets the stake rules, updated at once.
+ * consensus = the set chosen at the last boundary block: the next epoch's set
+ * during the epoch delay period, the current one after it.
+ * snapshot = the set before that: still producing blocks during the delay
+ * period, the previous epoch's set after it.
  */
 export function getValidatorSets() {
   return cached("validator-sets", async () => {

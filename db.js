@@ -125,7 +125,8 @@ for (const col of [
   "commission_raw TEXT",
   "unclaimed_rewards_wei TEXT",
   "consensus_stake_wei TEXT",
-  "snapshot_stake_wei TEXT"
+  "snapshot_stake_wei TEXT",
+  "set_state TEXT"
 ]) {
   try {
     db.exec(`ALTER TABLE validators ADD COLUMN ${col}`);
@@ -367,19 +368,21 @@ export function updateValidatorSecp(id, secpAddress) {
 }
 
 // ---------- Status Updates ----------
+// set_state keeps its value when a caller has none to give.
 const updateStatusStmt = db.prepare(`
-  UPDATE validators SET status = ?, status_updated_at = strftime('%s', 'now')
+  UPDATE validators SET status = ?, set_state = COALESCE(?, set_state),
+    status_updated_at = strftime('%s', 'now')
   WHERE id = ?
 `);
 
-export function updateValidatorStatus(id, status) {
-  return updateStatusStmt.run(status, id);
+export function updateValidatorStatus(id, status, setState = null) {
+  return updateStatusStmt.run(status, setState, id);
 }
 
-export function updateAllValidatorStatuses(statusMap) {
+export function updateAllValidatorStatuses(statusMap, setStateMap = {}) {
   const txn = db.transaction((map) => {
     for (const [id, status] of Object.entries(map)) {
-      updateStatusStmt.run(status, parseInt(id));
+      updateStatusStmt.run(status, setStateMap[id] ?? null, parseInt(id));
     }
   });
   return txn(statusMap);

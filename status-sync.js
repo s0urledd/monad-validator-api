@@ -13,6 +13,8 @@ const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();
 const STAKING_ADDRESS = "0x0000000000000000000000000000000000001000";
 
 const EPOCH_POLL_MS = Number(process.env.EPOCH_POLL_MS || 120000);
+// Seats in the active set (ACTIVE_VALSET_SIZE in the staking contract).
+const ACTIVE_VALSET_SIZE = Number(process.env.ACTIVE_VALSET_SIZE || 200);
 
 const STAKING_ABI = [
   "function getConsensusValidatorSet(uint32 startIndex) external returns (bool isDone, uint32 nextIndex, uint64[] valIds)",
@@ -58,6 +60,116 @@ async function fetchValidatorSet(contract, setType) {
   return new Set(ids);
 }
 
+async function readEpoch(contract) {
+  const result = await contract.getEpoch.staticCall();
+  return { epoch: Number(result[0]), inDelay: Boolean(result[1]) };
+}
+
+// The three sets and the delay flag have to describe the same moment: a
+// boundary block or an epoch change between the reads would pair the sets of
+// one epoch with the flag of another. The epoch is read before and after the
+// sets; if it moved, everything is read once more.
+async function readSets(contract) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const before = await readEpoch(contract);
+    const [consensus, execution, snapshot] = await Promise.all([
+      fetchValidatorSet(contract, "consensus"),
+      fetchValidatorSet(contract, "execution"),
+      fetchValidatorSet(contract, "snapshot"),
+    ]);
+    const after = await readEpoch(contract);
+    if (before.epoch === after.epoch && before.inDelay === after.inDelay) {
+      const sets = { consensus, execution, snapshot, epoch: after.epoch, inDelay: after.inDelay };
+      sets.now = sets.inDelay ? snapshot : consensus;
+      sets.next = await nextSet(contract, sets);
+      return sets;
+    }
+  }
+  throw new Error("epoch state changed while reading the validator sets");
+}
+
+// The set of the next epoch. Inside the delay period the chain has already
+// chosen it (consensus view). Before the boundary block it is a forecast: the
+// boundary block takes the execution view, and when that lists more validators
+// than there are seats, only the largest by stake.
+async function nextSet(contract, sets) {
+  if (sets.inDelay) return sets.consensus;
+  if (sets.execution.size <= ACTIVE_VALSET_SIZE) return sets.execution;
+
+  const ids = [...sets.execution];
+  const stakes = new Map();
+  const batchSize = 20;
+  for (let i = 0; i < ids.length; i += batchSize) {
+    await Promise.all(
+      ids.slice(i, i + batchSize).map(async (id) => {
+        const info = await contract.getValidator.staticCall(id);
+        stakes.set(id, info.stake);
+      })
+    );
+  }
+  ids.sort((a, b) => {
+    const sa = stakes.get(a);
+    const sb = stakes.get(b);
+    if (sa === sb) return a - b;
+    return sa > sb ? -1 : 1;
+  });
+  return new Set(ids.slice(0, ACTIVE_VALSET_SIZE));
+}
+
+// ---------- Set membership ----------
+// Where a validator stands in the active set, from the three on-chain views.
+// Outside the epoch delay period the consensus view is the set producing
+// blocks, and the execution view is what the next boundary block picks from.
+// Inside it the previous set (snapshot view) is still producing blocks and the
+// consensus view already holds the set of the next epoch.
+//   active   - in the set now and in the next one
+//   leaving  - in the set now, not in the next one
+//   joining  - not in the set now, in the next one
+//   inactive - in neither
+// Before the boundary block "next" is a forecast (see nextSet): stake can still
+// move until then.
+export function setStateOf(id, sets) {
+  const now = sets.now.has(id);
+  const next = sets.next.has(id);
+  if (now) return next ? "active" : "leaving";
+  return next ? "joining" : "inactive";
+}
+
+function statusOf(id, sets) {
+  if (sets.consensus.has(id)) return "active";
+  if (sets.snapshot.has(id) || sets.execution.has(id)) return "pending";
+  return "inactive";
+}
+
+function buildStatusMaps(validators, sets) {
+  const statusMap = {};
+  const setStateMap = {};
+  for (const v of validators) {
+    statusMap[v.id] = statusOf(v.id, sets);
+    setStateMap[v.id] = setStateOf(v.id, sets);
+  }
+  return { statusMap, setStateMap };
+}
+
+// Sets only, no stake data: cheap enough to run on every epoch poll, so a
+// validator crossing the stake threshold shows up within one poll instead of
+// at the next hourly sync.
+async function syncSets() {
+  let provider;
+  try {
+    provider = new ethers.JsonRpcProvider(MONAD_RPC_URL);
+    const contract = new ethers.Contract(STAKING_ADDRESS, STAKING_ABI, provider);
+    const sets = await readSets(contract);
+    const { statusMap, setStateMap } = buildStatusMaps(getAllValidators(), sets);
+    updateAllValidatorStatuses(statusMap, setStateMap);
+    log("debug", `Set sync: consensus ${sets.consensus.size}, execution ${sets.execution.size}, snapshot ${sets.snapshot.size}, in delay: ${sets.inDelay}`);
+  } catch (err) {
+    log("warn", `Set sync failed: ${err.message}`);
+  } finally {
+    provider?.destroy();
+  }
+}
+
 // ---------- Sync Logic ----------
 async function syncStatuses() {
   log("info", "Starting validator status sync...");
@@ -74,13 +186,12 @@ async function syncStatuses() {
 
   const contract = new ethers.Contract(STAKING_ADDRESS, STAKING_ABI, provider);
 
-  let consensusSet, executionSet, snapshotSet;
+  let sets, consensusSet, executionSet, snapshotSet;
   try {
-    [consensusSet, executionSet, snapshotSet] = await Promise.all([
-      fetchValidatorSet(contract, "consensus"),
-      fetchValidatorSet(contract, "execution"),
-      fetchValidatorSet(contract, "snapshot"),
-    ]);
+    sets = await readSets(contract);
+    consensusSet = sets.consensus;
+    executionSet = sets.execution;
+    snapshotSet = sets.snapshot;
     log("info", `Sets fetched - consensus: ${consensusSet.size}, execution: ${executionSet.size}, snapshot: ${snapshotSet.size}`);
   } catch (err) {
     log("error", "Failed to fetch validator sets:", err.message);
@@ -148,20 +259,10 @@ async function syncStatuses() {
   }
 
   const validators = getAllValidators();
-  const statusMap = {};
-
-  for (const v of validators) {
-    if (consensusSet.has(v.id)) {
-      statusMap[v.id] = "active";
-    } else if (snapshotSet.has(v.id) || executionSet.has(v.id)) {
-      statusMap[v.id] = "pending";
-    } else {
-      statusMap[v.id] = "inactive";
-    }
-  }
+  const { statusMap, setStateMap } = buildStatusMaps(validators, sets);
 
   try {
-    updateAllValidatorStatuses(statusMap);
+    updateAllValidatorStatuses(statusMap, setStateMap);
   } catch (err) {
     log("error", "Failed to update DB:", err.message);
     return { updated: 0, error: err.message };
@@ -268,6 +369,9 @@ async function checkEpoch() {
           .catch((err) => log("error", "Epoch-triggered sync failed:", err.message))
           .finally(() => { _syncing = false; });
       }
+    } else if (!_syncing) {
+      _syncing = true;
+      syncSets().finally(() => { _syncing = false; });
     }
   } catch (err) {
     log("debug", `Epoch poll failed: ${err.message}`);
@@ -290,7 +394,8 @@ export function startStatusSync() {
     }
   }, SYNC_INTERVAL_MS);
 
-  // Epoch watcher — polls every 60s, triggers sync on epoch/boundary change
+  // Epoch watcher: a full sync on an epoch or boundary change, the sets alone
+  // on every other poll
   _epochInterval = setInterval(checkEpoch, EPOCH_POLL_MS);
   checkEpoch();
 

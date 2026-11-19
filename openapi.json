@@ -104,7 +104,7 @@
           "Validators"
         ],
         "summary": "List validators",
-        "description": "Every known validator with metadata and synced on-chain staking data. `consensus_stake` is what is active this epoch and `snapshot_stake` what takes effect next epoch; their difference is a committed but not yet activated change.",
+        "description": "Every known validator with metadata and synced on-chain staking data. `consensus_stake` is the stake of the set chosen at the last boundary block and `snapshot_stake` the stake of the set before it; during the epoch delay period the snapshot figures are the ones in force. `set_state` says where the validator stands in the active set: `active` (in the set now and in the next one), `leaving` (in the set now, out of the next one), `joining` (not in the set now, in the next one) or `inactive`. It is read from the chain every two minutes. Before the boundary block the next set is a forecast from current stake; from the boundary block on it is final.",
         "operationId": "listValidators",
         "parameters": [
           {
@@ -129,6 +129,7 @@
                       "secp_address": "025f90fdc4f1ebe1a8939578d7f1ce53ecda08b18dda80aea9abe1e6a4546c3242",
                       "name": "Monad Foundation - cs-arn-001",
                       "status": "active",
+                      "set_state": "active",
                       "stake": 26576251.82,
                       "consensus_stake": 26576251.82,
                       "snapshot_stake": 26575658.48,
@@ -292,6 +293,7 @@
                     "validator_id": 1,
                     "validator_name": "Monad Foundation - cs-arn-001",
                     "status": "active",
+                    "set_state": "active",
                     "finalized_count": 393732,
                     "timeout_count": 101,
                     "total_events": 393833,
@@ -655,7 +657,7 @@
           "Staking"
         ],
         "summary": "Active set and next-epoch transitions",
-        "description": "Compares the consensus set (active this epoch), the snapshot set (active next epoch) and the execution set (eligible), giving who is entering, who is leaving, and who is eligible but below the cut.",
+        "description": "Who is in the active set now and who is in the next one: `entering` are validators with `set_state` `joining`, `leaving` those with `leaving`, and `eligible_not_active` those that meet the stake rules but are in neither set. Before the boundary block the next set is a forecast from current stake.",
         "operationId": "getValidatorSet",
         "responses": {
           "200": {
