@@ -657,7 +657,7 @@
           "Staking"
         ],
         "summary": "Active set and next-epoch transitions",
-        "description": "Who is in the active set now and who is in the next one: `entering` are validators with `set_state` `joining`, `leaving` those with `leaving`, and `eligible_not_active` those that meet the stake rules but are in neither set. Before the boundary block the next set is a forecast from current stake.",
+        "description": "Who is in the active set now and who is in the next one: `entering` are validators with `set_state` `joining`, `leaving` those with `leaving`, and `eligible_not_active` those that meet the stake rules but are in neither set. Before the boundary block the next set is a forecast from current stake. `epoch`, `in_delay_period` and `as_of` are those of the last set sync (every two minutes).",
         "operationId": "getValidatorSet",
         "responses": {
           "200": {
@@ -668,6 +668,7 @@
                   "success": true,
                   "epoch": 1164,
                   "in_delay_period": false,
+                  "as_of": "2026-11-19T06:20:00.000Z",
                   "counts": {
                     "active": 200,
                     "next_epoch": 200,
@@ -736,7 +737,7 @@
           "Staking"
         ],
         "summary": "On-chain validator detail",
-        "description": "`self_stake` is the auth address's own delegation, which the active set requires to be at least 100,000 MON. `pending` reports changes committed on-chain that activate next epoch, including a commission change before it takes effect.",
+        "description": "`self_stake` is the auth address's own delegation, which the active set requires to be at least 100,000 MON. `pending` is the difference between the stake and commission in force and the ones waiting to take effect: the current values before the boundary block, the already chosen next-epoch values during the epoch delay period.",
         "operationId": "getValidatorOnChain",
         "parameters": [
           {

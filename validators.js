@@ -68,7 +68,7 @@ function formatValidator(v) {
     status: v.status || "unknown",
     set_state: v.set_state || "unknown",
     stake: v.stake_wei ? toMON(v.stake_wei) : null,
-    // Active this epoch vs active next epoch — synced but never surfaced before.
+    // The view built at the last boundary block and the one before it.
     consensus_stake: v.consensus_stake_wei ? toMON(v.consensus_stake_wei) : null,
     snapshot_stake: v.snapshot_stake_wei ? toMON(v.snapshot_stake_wei) : null,
     commission: v.commission_raw ? parseFloat((Number(v.commission_raw) / 1e18 * 100).toFixed(2)) : null,

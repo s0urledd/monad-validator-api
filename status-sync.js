@@ -3,7 +3,7 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import { ethers } from "ethers";
-import { getAllValidators, updateAllValidatorStatuses, updateAllValidatorStakingData, upsertValidator, normalizeAddress, updateValidatorSecp } from "./db.js";
+import { getAllValidators, updateAllValidatorStatuses, updateChangedValidatorStates, updateAllValidatorStakingData, upsertValidator, normalizeAddress, updateValidatorSecp } from "./db.js";
 import { takeEpochSnapshot } from "./snapshot-job.js";
 
 const MONAD_RPC_URL = process.env.MONAD_RPC_URL || "http://127.0.0.1:8080";
@@ -89,31 +89,64 @@ async function readSets(contract) {
 }
 
 // The set of the next epoch. Inside the delay period the chain has already
-// chosen it (consensus view). Before the boundary block it is a forecast: the
-// boundary block takes the execution view, and when that lists more validators
-// than there are seats, only the largest by stake.
+// chosen it (consensus view). Before the boundary block it is a forecast of
+// what the boundary block will do with the execution view: a validator that
+// fell out of the stake rules stays listed there with its flags set and is
+// dropped only then, and when more unflagged validators are listed than there
+// are seats, only the largest by stake are taken.
 async function nextSet(contract, sets) {
   if (sets.inDelay) return sets.consensus;
-  if (sets.execution.size <= ACTIVE_VALSET_SIZE) return sets.execution;
 
   const ids = [...sets.execution];
-  const stakes = new Map();
+  const info = new Map();
   const batchSize = 20;
   for (let i = 0; i < ids.length; i += batchSize) {
     await Promise.all(
       ids.slice(i, i + batchSize).map(async (id) => {
-        const info = await contract.getValidator.staticCall(id);
-        stakes.set(id, info.stake);
+        try {
+          const v = await contract.getValidator.staticCall(id);
+          info.set(id, { flags: v.flags, stake: v.stake });
+        } catch (err) {
+          log("debug", `getValidator(${id}) failed in the next-set forecast: ${err.message}`);
+        }
       })
     );
   }
-  ids.sort((a, b) => {
-    const sa = stakes.get(a);
-    const sb = stakes.get(b);
+
+  // A validator that could not be read keeps the place it has now.
+  const eligible = ids.filter((id) => {
+    const v = info.get(id);
+    return v ? v.flags === 0n : sets.consensus.has(id);
+  });
+  if (eligible.length <= ACTIVE_VALSET_SIZE) return new Set(eligible);
+
+  if (eligible.some((id) => !info.has(id))) {
+    throw new Error("could not read every validator needed to rank the next set");
+  }
+  eligible.sort((a, b) => {
+    const sa = info.get(a).stake;
+    const sb = info.get(b).stake;
     if (sa === sb) return a - b;
     return sa > sb ? -1 : 1;
   });
-  return new Set(ids.slice(0, ACTIVE_VALSET_SIZE));
+  return new Set(eligible.slice(0, ACTIVE_VALSET_SIZE));
+}
+
+// What the stored set_state values were computed from, for the routes that
+// answer from them.
+let _setInfo = null;
+
+function rememberSets(sets) {
+  _setInfo = {
+    epoch: sets.epoch,
+    inDelay: sets.inDelay,
+    execution: [...sets.execution],
+    at: Math.floor(Date.now() / 1000),
+  };
+}
+
+export function getSetInfo() {
+  return _setInfo;
 }
 
 // ---------- Set membership ----------
@@ -151,18 +184,30 @@ function buildStatusMaps(validators, sets) {
   return { statusMap, setStateMap };
 }
 
-// Sets only, no stake data: cheap enough to run on every epoch poll, so a
-// validator crossing the stake threshold shows up within one poll instead of
-// at the next hourly sync.
+// The sets alone, without the stake data of the full sync, on every epoch
+// poll: a validator crossing the stake threshold shows up within one poll
+// instead of at the next hourly sync.
 async function syncSets() {
   let provider;
   try {
     provider = new ethers.JsonRpcProvider(MONAD_RPC_URL);
     const contract = new ethers.Contract(STAKING_ADDRESS, STAKING_ABI, provider);
     const sets = await readSets(contract);
-    const { statusMap, setStateMap } = buildStatusMaps(getAllValidators(), sets);
-    updateAllValidatorStatuses(statusMap, setStateMap);
-    log("debug", `Set sync: consensus ${sets.consensus.size}, execution ${sets.execution.size}, snapshot ${sets.snapshot.size}, in delay: ${sets.inDelay}`);
+
+    // A validator the database has not seen yet is added by the full sync
+    const validators = getAllValidators();
+    const known = new Set(validators.map((v) => v.id));
+    const isNew = (id) => !known.has(id);
+    if ([...sets.consensus].some(isNew) || [...sets.execution].some(isNew) || [...sets.snapshot].some(isNew)) {
+      log("info", "Set sync: a validator not in the database yet, running the full sync");
+      await syncStatuses();
+      return;
+    }
+
+    const { statusMap, setStateMap } = buildStatusMaps(validators, sets);
+    const changed = updateChangedValidatorStates(statusMap, setStateMap);
+    rememberSets(sets);
+    log(changed > 0 ? "info" : "debug", `Set sync: ${changed} changed (consensus ${sets.consensus.size}, execution ${sets.execution.size}, snapshot ${sets.snapshot.size}, in delay: ${sets.inDelay})`);
   } catch (err) {
     log("warn", `Set sync failed: ${err.message}`);
   } finally {
@@ -263,6 +308,7 @@ async function syncStatuses() {
 
   try {
     updateAllValidatorStatuses(statusMap, setStateMap);
+    rememberSets(sets);
   } catch (err) {
     log("error", "Failed to update DB:", err.message);
     return { updated: 0, error: err.message };
@@ -328,6 +374,27 @@ let _lastEpoch = null;
 let _lastDelayPeriod = null;
 let _epochInterval = null;
 let _syncing = false;
+let _fullSyncWanted = false;
+
+// One sync at a time. A full sync asked for while another one runs is not
+// dropped: it starts as soon as that one ends.
+function requestSync(full, label) {
+  if (_syncing) {
+    if (full) _fullSyncWanted = true;
+    return;
+  }
+  _syncing = true;
+  Promise.resolve()
+    .then(() => (full ? syncStatuses() : syncSets()))
+    .catch((err) => log("error", `${label} sync failed:`, err.message))
+    .finally(() => {
+      _syncing = false;
+      if (_fullSyncWanted) {
+        _fullSyncWanted = false;
+        requestSync(true, "Deferred");
+      }
+    });
+}
 
 async function checkEpoch() {
   try {
@@ -363,15 +430,9 @@ async function checkEpoch() {
         }
       }
 
-      if (!_syncing) {
-        _syncing = true;
-        syncStatuses()
-          .catch((err) => log("error", "Epoch-triggered sync failed:", err.message))
-          .finally(() => { _syncing = false; });
-      }
-    } else if (!_syncing) {
-      _syncing = true;
-      syncSets().finally(() => { _syncing = false; });
+      requestSync(true, "Epoch-triggered");
+    } else {
+      requestSync(false, "Set");
     }
   } catch (err) {
     log("debug", `Epoch poll failed: ${err.message}`);
@@ -382,17 +443,10 @@ async function checkEpoch() {
 let syncInterval = null;
 
 export function startStatusSync() {
-  syncStatuses().catch((err) => log("error", "Initial status sync failed:", err.message));
+  requestSync(true, "Initial");
 
   // Default periodic sync (fallback)
-  syncInterval = setInterval(() => {
-    if (!_syncing) {
-      _syncing = true;
-      syncStatuses()
-        .catch((err) => log("error", "Periodic status sync failed:", err.message))
-        .finally(() => { _syncing = false; });
-    }
-  }, SYNC_INTERVAL_MS);
+  syncInterval = setInterval(() => requestSync(true, "Periodic"), SYNC_INTERVAL_MS);
 
   // Epoch watcher: a full sync on an epoch or boundary change, the sets alone
   // on every other poll

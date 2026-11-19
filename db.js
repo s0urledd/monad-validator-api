@@ -388,6 +388,26 @@ export function updateAllValidatorStatuses(statusMap, setStateMap = {}) {
   return txn(statusMap);
 }
 
+// For the frequent set sync: only rows whose status or set_state moved are
+// written, so status_updated_at (and the updated_at built from it) does not
+// tick on every poll.
+const updateChangedStateStmt = db.prepare(`
+  UPDATE validators SET status = ?, set_state = ?, status_updated_at = strftime('%s', 'now')
+  WHERE id = ? AND (status IS NOT ? OR set_state IS NOT ?)
+`);
+
+export function updateChangedValidatorStates(statusMap, setStateMap) {
+  const txn = db.transaction(() => {
+    let changed = 0;
+    for (const [id, status] of Object.entries(statusMap)) {
+      const setState = setStateMap[id] ?? null;
+      changed += updateChangedStateStmt.run(status, setState, parseInt(id), status, setState).changes;
+    }
+    return changed;
+  });
+  return txn();
+}
+
 // ---------- Staking Data Updates ----------
 const updateStakingStmt = db.prepare(`
   UPDATE validators SET stake_wei = ?, commission_raw = ?, unclaimed_rewards_wei = ?, consensus_stake_wei = ?, snapshot_stake_wei = ?
