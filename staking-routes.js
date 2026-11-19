@@ -9,11 +9,12 @@ import {
   getDelegatorsPage,
   getEpochInfo,
   getLivePool,
-  getValidatorSets,
   getProposer,
 } from "./staking.js";
+import { getSetInfo } from "./status-sync.js";
 import {
   getValidatorById,
+  getAllValidators,
   getValidatorCount,
   getMeasuredBlockTime,
   getStakingEvents,
@@ -517,28 +518,37 @@ function describeValidators(ids) {
 // GET /monad-api/staking/validator-set
 router.get("/validator-set", async (req, res) => {
   try {
-    const [sets, epoch] = await Promise.all([
-      getValidatorSets(),
-      getEpochInfo().catch(() => null),
-    ]);
+    // Who is in the set now and who is in the next one comes from the synced
+    // set_state (see status-sync.js): which on-chain view answers each
+    // question depends on the epoch delay period, and it is worked out once
+    // there. The snapshot view is the previous set, not the next one. The
+    // epoch, the delay flag and the execution view are the ones that sync
+    // read, so everything in the response describes the same moment.
+    const info = getSetInfo();
+    if (!info) {
+      return res.status(503).json({
+        success: false,
+        error: "Validator sets not synced yet",
+      });
+    }
 
-    const consensus = new Set(sets.consensus);
-    const snapshot = new Set(sets.snapshot);
+    const state = new Map(getAllValidators().map((v) => [v.id, v.set_state]));
+    const idsIn = (...states) =>
+      [...state].filter(([, s]) => states.includes(s)).map(([id]) => id);
 
-    // snapshot is next epoch's set, consensus is this epoch's
-    const entering = sets.snapshot.filter((id) => !consensus.has(id));
-    const leaving = sets.consensus.filter((id) => !snapshot.has(id));
-    const eligibleNotActive = sets.execution.filter(
-      (id) => !consensus.has(id) && !snapshot.has(id)
-    );
+    const entering = idsIn("joining");
+    const leaving = idsIn("leaving");
+    const eligibleNotActive = info.execution.filter((id) => state.get(id) === "inactive");
 
     res.json({
       success: true,
-      ...(epoch && { epoch: epoch.epoch, in_delay_period: epoch.in_delay_period }),
+      epoch: info.epoch,
+      in_delay_period: info.inDelay,
+      as_of: new Date(info.at * 1000).toISOString(),
       counts: {
-        active: sets.consensus.length,
-        next_epoch: sets.snapshot.length,
-        eligible: sets.execution.length,
+        active: idsIn("active", "leaving").length,
+        next_epoch: idsIn("active", "joining").length,
+        eligible: info.execution.length,
         entering: entering.length,
         leaving: leaving.length,
         eligible_not_active: eligibleNotActive.length,
@@ -568,6 +578,18 @@ router.get("/validator/:valId", async (req, res) => {
 
     const validator = getValidatorById(valId);
     const onChain = await getValidatorOnChain(valId);
+    const epochInfo = await getEpochInfo().catch(() => null);
+    const inDelay = epochInfo?.in_delay_period === true;
+    // What is waiting to take effect. In the delay period the consensus view
+    // already holds the next epoch and the snapshot view is still in force;
+    // outside it the consensus view is in force and the current stake and
+    // commission are what the next boundary block would take.
+    const inForce = inDelay
+      ? { stake: onChain.snapshot_stake, commission: onChain.snapshot_commission }
+      : { stake: onChain.consensus_stake, commission: onChain.consensus_commission };
+    const upcoming = inDelay
+      ? { stake: onChain.consensus_stake, commission: onChain.consensus_commission }
+      : { stake: onChain.stake, commission: onChain.commission };
 
     // Query auth_address's delegation rewards
     let authDelegation = null;
@@ -593,20 +615,17 @@ router.get("/validator/:valId", async (req, res) => {
         self_stake: authDelegation ? authDelegation.stake : null,
         unclaimed_rewards: authDelegation ? authDelegation.unclaimed_rewards : 0,
         auth_address: onChain.auth_address,
-        // consensus_* is what is active this epoch, snapshot_* is what takes effect
-        // next epoch. Their difference is a change that has been committed on-chain
-        // but has not activated yet.
+        // consensus_* is the view built at the last boundary block, snapshot_* the
+        // one before it (see getValidatorSets in staking.js).
         consensus_stake: onChain.consensus_stake,
         snapshot_stake: onChain.snapshot_stake,
         consensus_commission: onChain.consensus_commission,
         snapshot_commission: onChain.snapshot_commission,
         pending: {
-          stake_delta: parseFloat(
-            (onChain.snapshot_stake - onChain.consensus_stake).toFixed(2)
-          ),
+          stake_delta: parseFloat((upcoming.stake - inForce.stake).toFixed(2)),
           commission_change:
-            onChain.snapshot_commission !== onChain.consensus_commission
-              ? { from: onChain.consensus_commission, to: onChain.snapshot_commission }
+            upcoming.commission !== inForce.commission
+              ? { from: inForce.commission, to: upcoming.commission }
               : null,
         },
       },

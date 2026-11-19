@@ -94,7 +94,7 @@ plain text for agents. All three come from the one document.
 
 | | |
 |---|---|
-| `GET /monad-api/validators` | Metadata, stake, status. `?limit` `?offset` |
+| `GET /monad-api/validators` | Metadata, stake, status, `set_state`. `?limit` `?offset` |
 | `GET /monad-api/validators/stats` | Counts by status |
 | `GET /monad-api/validators/{id}` | One validator, by ID or secp address |
 | `GET /monad-api/validators/uptime` | All validators. `?window` or `?period`, `?sort`, `?limit` |
@@ -286,7 +286,8 @@ up by the next run, once it has closed.
 | `TRUST_PROXY` | `loopback` | Hops trusted for `X-Forwarded-For` |
 | `METADATA_SYNC_INTERVAL_MS` | `3600000` | |
 | `STATUS_SYNC_INTERVAL_MS` | `3600000` | |
-| `EPOCH_POLL_MS` | `120000` | Epoch watcher |
+| `EPOCH_POLL_MS` | `120000` | Epoch watcher; the validator sets are re-read on every poll |
+| `ACTIVE_VALSET_SIZE` | `200` | Seats in the active set, for the next-epoch forecast |
 | `UPTIME_RETENTION_HOURS` | `48` | Rolling window for raw rounds |
 | `EVENT_INDEXER_POLL_MS` | `30000` | |
 | `EVENT_INDEXER_CHUNK` | `1000` | Blocks per `eth_getLogs` |
